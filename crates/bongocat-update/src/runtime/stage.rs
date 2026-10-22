@@ -40,4 +40,6 @@ pub enum UpdateUnavailability {
     DevelopmentChannel,
     /// No release signing key is provisioned.
     SigningKeyMissing,
+    /// This platform has no release artifact to update to.
+    UnsupportedPlatform,
 }

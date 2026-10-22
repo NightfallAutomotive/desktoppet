@@ -67,11 +67,14 @@ Linux also differs in kind, not just in API:
 
 ### Platform boundary
 
-- Linux code lives only in platform adapter modules: `bongocat-platform`,
-  `bongocat-overlay`, the `bongocat-live2d` build script, `bongocat-update`
-  target selection and `bongocat-packaging`. It uses direct
-  `#[cfg(target_os = "linux")]` modules, the same shape as the existing
-  `windows`/`macos` modules.
+- Linux code lives only in the crates that already own a per-platform branch:
+  the adapters (`bongocat-platform`, `bongocat-overlay`, `bongocat-live2d`
+  bindings, `bongocat-update` target selection, `bongocat-packaging`) and the
+  product crates that select between them (`bongocat-app`, `bongocat-ui`,
+  `bongocat-config` storage roots, `bongocat-i18n` platform copy). It uses
+  direct `#[cfg(target_os = "linux")]` items, the same shape as the existing
+  `windows`/`macos` ones. The platform-neutral contract crates (input, render,
+  runtime, model, storage, UI protocol and the rest) never see a Linux cfg.
 - A capability that is not implemented yet returns a typed `Unsupported` error
   or capability status, which settings and diagnostics display. Linux never
   silently does nothing in a way that looks like success, and no `any()` cfg
@@ -151,7 +154,7 @@ changes.
 | Stage | Deliverable | Exit gate |
 |---|---|---|
 | L0 | This ADR, the TODO phase and the Technical Design update | Documents agree |
-| L1 | Workspace builds and tests on Linux; every Linux capability returns `Unsupported`; Linux CI job | `cargo test --locked --workspace` and clippy on Linux in CI; Windows/macOS `just check` unchanged |
+| L1 | Workspace builds and lints on Linux; capabilities without a Linux implementation return a typed unsupported state; Linux CI job | Linux clippy (`-D warnings`) and the tests of every crate that does not link the Cubism Core pass in CI; Windows/macOS `just check` unchanged |
 | L2 | Linux Cubism Core vendored with provenance; `bongocat-live2d` links it | Live2D tests pass for all three preset models on Linux |
 | L3 | Renderer backend spike and decision | Offscreen readback of the three preset models matches the D3D11/Metal references within the existing tolerance |
 | L4 | Overlay on X11 and KDE Wayland | Transparency, topmost, click-through, drag/resize and fractional scaling verified on hardware; repeated open/close and clean shutdown |
@@ -159,6 +162,43 @@ changes.
 | L6 | Tray, menus, shortcuts, dialogs, clipboard, autostart, single instance, theme | Settings UI and system-menu smoke tests on both KDE sessions; 800×600 and 100/125/150/200% layout |
 | L7 | AppImage, signing, update target | Install, update, rollback and uninstall verified on hardware |
 | L8 | Support decision | 8-hour soak with no resource growth; capability matrix published; a follow-up ADR states what is supported |
+
+### L1 implementation record (2026-10-22)
+
+- **Link boundary.** `cargo test` cannot link `bongocat-live2d` and its
+  dependents (`runtime`, `overlay`, `ui`, `app`) until L2 vendors the Linux
+  Core, so the L1 CI job excludes them from the test run. L2 removes the
+  exclusions.
+- **Raw bindings.** `x86_64-unknown-linux-gnu` was added to
+  `tools/cubism-bindgen`; the real r.5 bindings were generated twice and are
+  byte-identical to the reviewed macOS bindings (`docs/cubism/binding-generation.md`).
+- **Real on Linux already** (not yet verified on hardware): clipboard
+  (`arboard`, X11), model folder and cover pickers (`rfd` `xdg-portal`, scoped
+  to the Linux target), XDG storage root, XDG autostart (`auto-launch`), the OS
+  version (`os-release` and kernel release), the startup input check (an
+  openable `/dev/input/event*` node) and its prompt copy in every locale.
+- **Typed unsupported:** the overlay (`overlay_unsupported_on_linux`, so the
+  product quits through its existing startup-failure path), native window
+  show/hide/close, display queries (`None`), the overlay context menu and
+  updates (`UpdateUnavailability::UnsupportedPlatform`, with locale copy).
+  `global-hotkey` reaches X11 clients only.
+- **Tray.** `tray-icon`'s `ksni` backend (pure-Rust StatusNotifierItem over
+  D-Bus, no GTK) is enabled for the Linux target only. Its `muda/snapshot`
+  feature swaps muda's internal `Rc<RefCell>` state for `Arc<Mutex>`, so it
+  must never be unified into the Windows or macOS build.
+- **Dependencies.** The 134 Linux-only packages in the graph are all covered by
+  the `deny.toml` license allow list. `deny.toml` keeps listing only shipped
+  targets (the packaging contract requires it) until L7.
+- **Temporary lint exemptions.** `bongocat-overlay`, the `bongocat-app`
+  binary, `system_menu_native` and one `DisplayBounds` method carry
+  `cfg_attr(target_os = "linux", allow(dead_code, …))`. They cover shared
+  code whose only callers are the macOS and Windows overlay sessions, and are
+  removed when the L4 Linux overlay session lands.
+- **Renderer input for L3.** GPUI already brings `wgpu` (Vulkan and GLES) into
+  the Linux graph, so under ADR-0030 the L3 spike evaluates `wgpu` first,
+  before a separate EGL/OpenGL ES stack.
+- **Flatpak note.** Inside a Flatpak sandbox `os-release` describes the
+  Flatpak runtime rather than the host distribution.
 
 ## Consequences
 

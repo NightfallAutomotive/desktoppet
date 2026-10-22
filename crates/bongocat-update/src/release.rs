@@ -89,22 +89,33 @@ impl UpdateTargetTriple {
     }
 }
 
-/// The release target this binary was built for.
+/// The release target this binary was built for, or `None` where no release
+/// artifact exists yet.
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
-pub const HOST_TARGET_TRIPLE: UpdateTargetTriple = UpdateTargetTriple::Aarch64AppleDarwin;
+pub const HOST_TARGET_TRIPLE: Option<UpdateTargetTriple> =
+    Some(UpdateTargetTriple::Aarch64AppleDarwin);
 
 #[cfg(all(target_os = "macos", target_arch = "x86_64"))]
-pub const HOST_TARGET_TRIPLE: UpdateTargetTriple = UpdateTargetTriple::X86_64AppleDarwin;
+pub const HOST_TARGET_TRIPLE: Option<UpdateTargetTriple> =
+    Some(UpdateTargetTriple::X86_64AppleDarwin);
 
 #[cfg(all(target_os = "windows", target_arch = "x86_64"))]
-pub const HOST_TARGET_TRIPLE: UpdateTargetTriple = UpdateTargetTriple::X86_64PcWindowsMsvc;
+pub const HOST_TARGET_TRIPLE: Option<UpdateTargetTriple> =
+    Some(UpdateTargetTriple::X86_64PcWindowsMsvc);
+
+/// Linux builds run, but nothing is released for them until ADR-0090 stage L7,
+/// so the update runtime reports the platform as unsupported instead of looking
+/// up a manifest entry that does not exist.
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub const HOST_TARGET_TRIPLE: Option<UpdateTargetTriple> = None;
 
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
     all(target_os = "macos", target_arch = "x86_64"),
-    all(target_os = "windows", target_arch = "x86_64")
+    all(target_os = "windows", target_arch = "x86_64"),
+    all(target_os = "linux", target_arch = "x86_64")
 )))]
-compile_error!("BongoCat builds only for macOS and x86_64 Windows");
+compile_error!("BongoCat builds only for macOS, x86_64 Windows and x86_64 Linux");
 
 /// Immutable configuration for one update run.
 ///
@@ -123,7 +134,9 @@ pub struct ReleaseConfiguration {
     pub binary_name: &'static str,
     /// Bundle directory name inside the release archive, on targets that install a bundle.
     pub bundle_name: Option<&'static str>,
-    pub target: UpdateTargetTriple,
+    /// The release target this build updates as, or `None` on a platform that has no
+    /// release artifact yet (Linux until ADR-0090 stage L7).
+    pub target: Option<UpdateTargetTriple>,
 }
 
 impl ReleaseConfiguration {
@@ -141,10 +154,9 @@ impl ReleaseConfiguration {
             repository_owner,
             repository_name,
             binary_name,
-            bundle_name: if target.is_apple() {
-                Some(bundle_name)
-            } else {
-                None
+            bundle_name: match target {
+                Some(target) if target.is_apple() => Some(bundle_name),
+                _ => None,
             },
             target,
         }
@@ -205,13 +217,22 @@ mod tests {
         }
     }
 
+    #[cfg(not(target_os = "linux"))]
     #[test]
     fn host_target_is_one_of_the_shipped_combinations() {
         assert!(matches!(
             HOST_TARGET_TRIPLE,
-            UpdateTargetTriple::Aarch64AppleDarwin
-                | UpdateTargetTriple::X86_64AppleDarwin
-                | UpdateTargetTriple::X86_64PcWindowsMsvc
+            Some(
+                UpdateTargetTriple::Aarch64AppleDarwin
+                    | UpdateTargetTriple::X86_64AppleDarwin
+                    | UpdateTargetTriple::X86_64PcWindowsMsvc
+            )
         ));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_has_no_release_target_yet() {
+        assert_eq!(HOST_TARGET_TRIPLE, None);
     }
 }

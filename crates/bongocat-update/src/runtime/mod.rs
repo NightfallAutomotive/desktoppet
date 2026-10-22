@@ -142,10 +142,13 @@ impl UpdateRuntime {
 
     /// Why this build cannot update, or `None` when it can.
     ///
-    /// The order is the order the gates are applied in: the channel, then the
-    /// signing key. Callers surface the first reason so the UI can explain the
+    /// The order is the order the gates are applied in: the platform, then the
+    /// channel, then the signing key. Callers surface the first reason so the UI can explain the
     /// absence of the entry point instead of leaving it unexplained.
     pub fn unavailability(&self) -> Option<UpdateUnavailability> {
+        if self.configuration.target.is_none() {
+            return Some(UpdateUnavailability::UnsupportedPlatform);
+        }
         if !self.configuration.channel.is_enabled() {
             return Some(UpdateUnavailability::DevelopmentChannel);
         }

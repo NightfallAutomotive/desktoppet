@@ -45,6 +45,11 @@
       "title": "Khuyến nghị chạy với quyền quản trị",
       "description": "BongoCat cần quyền quản trị để tiếp tục nhận thông tin từ bàn phím và chuột khi một ứng dụng khác đang chạy với đặc quyền quản trị.\n\nĐể thiết lập: nhấp phải vào BongoCat → Thuộc tính → Tương thích → bật \"Chạy chương trình này với tư cách quản trị viên\".",
       "open_program_folder": "Thoát và mở Cài đặt"
+    },
+    "input_devices": {
+      "title": "Cần quyền truy cập thiết bị nhập",
+      "description": "BongoCat đọc dữ liệu bàn phím và chuột trực tiếp từ thiết bị nhập. Dữ liệu này chỉ dùng để tạo hoạt ảnh và không bao giờ ghi lại nội dung bạn gõ.\n\nĐể thiết lập, hãy thêm tài khoản của bạn vào nhóm \"input\" (ví dụ: sudo usermod -aG input $USER), sau đó đăng xuất và đăng nhập lại.",
+      "acknowledge": "Đã hiểu"
     }
   },
   "about": {
@@ -215,7 +220,8 @@
     },
     "unavailable": {
       "development_build": "Bản dựng phát triển không thể cài đặt bản cập nhật phát hành.",
-      "signing_key_missing": "Phiên bản này không thể xác minh bản cập nhật nên tính năng cập nhật đã bị tắt."
+      "signing_key_missing": "Phiên bản này không thể xác minh bản cập nhật nên tính năng cập nhật đã bị tắt.",
+      "unsupported_platform": "Bản cập nhật chưa khả dụng cho nền tảng này."
     },
     "about": {
       "label": "Kiểm tra cập nhật"

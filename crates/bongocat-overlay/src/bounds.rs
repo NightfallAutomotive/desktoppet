@@ -144,6 +144,12 @@ impl OverlaySessionOptions {
             self.corner_radius_percent != next.corner_radius_percent
                 || self.keep_inside_screen != next.keep_inside_screen
         }
+        // Linux has no presentation resources to replace until ADR-0090 L4.
+        #[cfg(target_os = "linux")]
+        {
+            let _ = next;
+            false
+        }
     }
 }
 

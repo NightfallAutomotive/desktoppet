@@ -56,6 +56,7 @@ pub(crate) fn run_check(
                 ApplicationLogContext::Reason(match reason {
                     UpdateUnavailability::DevelopmentChannel => "development_channel",
                     UpdateUnavailability::SigningKeyMissing => "signing_key_missing",
+                    UpdateUnavailability::UnsupportedPlatform => "unsupported_platform",
                 }),
             ),
         );
@@ -123,6 +124,7 @@ pub(crate) fn run_install(
                 ApplicationLogContext::Reason(match reason {
                     UpdateUnavailability::DevelopmentChannel => "development_channel",
                     UpdateUnavailability::SigningKeyMissing => "signing_key_missing",
+                    UpdateUnavailability::UnsupportedPlatform => "unsupported_platform",
                 }),
             ),
         );

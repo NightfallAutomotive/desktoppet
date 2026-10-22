@@ -45,6 +45,11 @@
       "title": "建议以管理员权限运行",
       "description": "BongoCat 需要管理员权限，才能在其他应用以管理员权限运行时继续接收键盘和鼠标输入。\n\n设置方法：右键 BongoCat → 属性 → 兼容性 → 勾选「以管理员身份运行此程序」。",
       "open_program_folder": "退出并前往设置"
+    },
+    "input_devices": {
+      "title": "需要输入设备访问权限",
+      "description": "BongoCat 直接从输入设备读取键盘和鼠标输入，仅用于驱动动画，不会记录你输入的内容。\n\n设置方法：将你的账户加入“input”用户组（例如：sudo usermod -aG input $USER），然后注销并重新登录。",
+      "acknowledge": "知道了"
     }
   },
   "about": {
@@ -215,7 +220,8 @@
     },
     "unavailable": {
       "development_build": "开发版本不会安装正式版更新。",
-      "signing_key_missing": "当前版本无法验证更新，因此更新功能已关闭。"
+      "signing_key_missing": "当前版本无法验证更新，因此更新功能已关闭。",
+      "unsupported_platform": "此平台暂不支持更新。"
     },
     "about": {
       "label": "检查更新"

@@ -48,6 +48,7 @@ the provenance as config revision `cubism-core-r5-v1`.
 | `x86_64-pc-windows-msvc` | `x86_64-pc-windows-msvc` | C calling convention |
 | `aarch64-apple-darwin`   | `arm64-apple-darwin`     | C calling convention |
 | `x86_64-apple-darwin`    | `x86_64-apple-darwin`    | C calling convention |
+| `x86_64-unknown-linux-gnu` | `x86_64-unknown-linux-gnu` | C calling convention |
 
 `i686-pc-windows-msvc` is deliberately rejected because ADR-0033 excludes Windows
 x86 from BongoCat's supported targets. `aarch64-pc-windows-msvc` is also outside the final
@@ -68,7 +69,7 @@ output is visible rather than silently accepted.
 
 - header 必须是名为 `Live2DCubismCore.h` 的绝对路径；
 - 必须提供 offline SDK inspector 记录的 64 字符 header SHA-256；
-- target 必须属于三个显式 generation target；
+- target 必须属于四个显式 generation target；
 - 输出必须是全新的绝对 staging 目录，review 完成前不得覆盖产品 binding。
 
 生成前会检查 canonical header 与 staging output。工具拒绝已存在的输出目录，不会
@@ -97,7 +98,7 @@ not an SDK-derived file. Three generated goldens verify:
 - the `csm*` allowlist excludes unrelated vendor declarations;
 - required lifecycle and drawable symbols remain present;
 - the standalone Core probe compiles and passes Clippy against synthetic bindings without an SDK;
-- all three available product/R5 target intersections use the expected C ABI;
+- all four available product/R5 target intersections use the expected C ABI;
 - each generated file compiles as Rust 2024 metadata for its matching target;
 - generated-file changes fail CI until explicitly reviewed and refreshed.
 
@@ -120,3 +121,15 @@ macOS arm64/x64 与 Windows x64 binding 固定到产品 crate，Windows x64 rele
 交叉 check 已通过。Synthetic contract 现在要求 r.5 的 `csmGetRenderOrders`、drawable
 blend mode、part offscreen index 和全部 offscreen array。第二人重生成 review 及
 Windows x64/macOS x64 原生 ABI evidence 完成前，P0 raw-binding TODO 保持未完成。
+
+Linux x64（ADR-0090 L1）：`x86_64-unknown-linux-gnu` 已加入生成 target 表
+（clang target 同名，C calling convention）。2026-10-22 在 Fedora 44 宿主机用
+`clang version 22.1.8 (Fedora 22.1.8-4.fc44)`、bindgen 0.72.1、config revision
+`cubism-core-r5-v1`（config SHA-256
+`abacb15263ef79f17117551035d746d4ab1c336bcd398b61d0d26c01e12d9f77`）对同一 header
+连续生成两次，两次 binding SHA-256 均为
+`6cd53ddbb173d73a842b33a507c5c03c879adcb05a8c005730b58c1f0f061364`，与已审阅的
+macOS binding 字节一致，原样写入 `crates/bongocat-live2d/src/sys/linux.rs`。同一
+libclang 刷新 synthetic fixture 时现有三个 target 的 expected 输出不变。Linux Core
+artifact 尚未 vendor（L2），因此 Linux 只完成 metadata 编译，链接与 Core/model
+probe 仍待 L2。

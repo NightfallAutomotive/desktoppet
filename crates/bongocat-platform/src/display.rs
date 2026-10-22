@@ -24,6 +24,8 @@ impl DisplayBounds {
     /// Edge-touching counts as not visible, which is what keeps a window the
     /// user has dragged onto a second monitor from being clamped back onto the
     /// first one.
+    // Only the Windows display query uses this until Linux reports displays (ADR-0090 L4).
+    #[cfg_attr(target_os = "linux", allow(dead_code))]
     pub(crate) fn intersects_window(self, x: f32, y: f32, width: f32, height: f32) -> bool {
         x < self.x + self.width
             && x + width > self.x

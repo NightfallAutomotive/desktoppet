@@ -9,6 +9,9 @@
 //! cargo run -p bongocat-platform --example model_source_picker_smoke -- --expect-selected <path>
 //! ```
 //!
+//! On Linux the picker is the XDG desktop portal's folder chooser, so the run
+//! is manual and needs a running portal service.
+//!
 //! On Windows `--auto` additionally drives the dialog with the Win32 controller.
 //! A folder dialog needs a selected item before it can be confirmed, so on
 //! Windows that flag only covers the cancellation path: an accepted run selects
@@ -269,6 +272,20 @@ fn start_automation(
     Ok(None)
 }
 
+#[cfg(target_os = "linux")]
+fn start_automation(
+    _expected: &ExpectedOutcome,
+    automated: bool,
+    _completed: Arc<AtomicBool>,
+) -> Result<Option<std::thread::JoinHandle<Result<(), io::Error>>>, io::Error> {
+    if automated {
+        return Err(io::Error::other(
+            "--auto is supported only by the Windows picker smoke",
+        ));
+    }
+    Ok(None)
+}
+
 fn run_native_picker_smoke() -> Result<(), Box<dyn Error>> {
     let options = smoke_options()?;
     #[cfg(target_os = "macos")]
@@ -285,6 +302,10 @@ fn run_native_picker_smoke() -> Result<(), Box<dyn Error>> {
             let _ = sender.send(result);
         })?;
     }
+    #[cfg(target_os = "linux")]
+    pick_model_folder(move |result| {
+        let _ = sender.send(result);
+    })?;
     let automation = start_automation(&options.expected, options.automated, completed)?;
     #[cfg(target_os = "macos")]
     run_native_application(&native_application);
@@ -296,6 +317,10 @@ fn run_native_picker_smoke() -> Result<(), Box<dyn Error>> {
         .map_err(|_| {
             io::Error::other("timed out waiting for the model source picker callback")
         })??;
+    #[cfg(target_os = "linux")]
+    let actual = receiver
+        .recv()
+        .map_err(|_| io::Error::other("model source picker callback was dropped"))??;
     #[cfg(target_os = "macos")]
     let actual = receiver
         .recv()

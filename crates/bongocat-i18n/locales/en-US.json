@@ -45,6 +45,11 @@
       "title": "Recommend running with administrator access",
       "description": "BongoCat needs administrator access to keep receiving keyboard and mouse input when another app is running with administrator privileges.\n\nTo set it up: right-click BongoCat → Properties → Compatibility → turn on \"Run this program as an administrator\".",
       "open_program_folder": "Exit and open Settings"
+    },
+    "input_devices": {
+      "title": "Input Device Access Required",
+      "description": "BongoCat reads keyboard and mouse input directly from your input devices. It only uses this to animate and never records what you type.\n\nTo set it up, add your account to the \"input\" group (for example: sudo usermod -aG input $USER), then log out and back in.",
+      "acknowledge": "Got It"
     }
   },
   "about": {
@@ -215,7 +220,8 @@
     },
     "unavailable": {
       "development_build": "Development builds cannot install release updates.",
-      "signing_key_missing": "This version cannot verify updates, so updating is disabled."
+      "signing_key_missing": "This version cannot verify updates, so updating is disabled.",
+      "unsupported_platform": "Updates are not available for this platform yet."
     },
     "about": {
       "label": "Check for Updates"

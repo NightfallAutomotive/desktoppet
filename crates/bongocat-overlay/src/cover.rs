@@ -343,6 +343,8 @@ pub struct ModelCoverCaptureSession {
     pub(crate) inner: macos::CoverCaptureSession,
     #[cfg(target_os = "windows")]
     pub(crate) inner: windows::CoverCaptureSession,
+    #[cfg(target_os = "linux")]
+    pub(crate) inner: linux::CoverCaptureSession,
 }
 
 impl ModelCoverCaptureSession {
@@ -352,6 +354,8 @@ impl ModelCoverCaptureSession {
             inner: macos::CoverCaptureSession::start(model)?,
             #[cfg(target_os = "windows")]
             inner: windows::CoverCaptureSession::start(model)?,
+            #[cfg(target_os = "linux")]
+            inner: linux::CoverCaptureSession::start(model)?,
         })
     }
 

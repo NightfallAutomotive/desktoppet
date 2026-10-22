@@ -144,6 +144,22 @@ pub(crate) fn finish_product_quit(cx: &mut App) {
                 .store(true, Ordering::Release);
         }
     }
+
+    // Linux quits the way macOS does: run the whole ordered shutdown, then exit
+    // with the code its final failure list produces.
+    #[cfg(target_os = "linux")]
+    {
+        if cx.has_global::<ProductCoordinator>() {
+            let shutdown = begin_product_shutdown(cx);
+            cx.spawn(async move |_| {
+                let failures = shutdown.finish().await;
+                std::process::exit(product_failures_exit_code(&failures));
+            })
+            .detach();
+            return;
+        }
+        cx.quit();
+    }
 }
 
 pub(crate) fn request_product_quit(cx: &mut App) {
@@ -257,6 +273,11 @@ pub(crate) fn begin_product_shutdown(cx: &mut App) -> ProductShutdown {
         let mut overlay = coordinator.overlay.borrow_mut();
         overlay.take().expect("product overlay owner is present")
     };
+    #[cfg(target_os = "linux")]
+    let mut overlay = coordinator
+        .overlay
+        .take()
+        .expect("product overlay owner is present");
     // Registered hotkeys must stop consuming keys before any service that
     // would re-trigger them is torn down.
     if let Some(shortcut_service) = coordinator.shortcut_service.take()

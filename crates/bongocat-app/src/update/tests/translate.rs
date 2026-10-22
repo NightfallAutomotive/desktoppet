@@ -37,6 +37,10 @@ fn unavailability_reasons_are_preserved() {
         unavailable_reason(UpdateUnavailability::SigningKeyMissing),
         UpdateUnavailableReason::SigningKeyMissing
     );
+    assert_eq!(
+        unavailable_reason(UpdateUnavailability::UnsupportedPlatform),
+        UpdateUnavailableReason::UnsupportedPlatform
+    );
 }
 
 #[test]

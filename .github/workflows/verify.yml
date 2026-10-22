@@ -243,6 +243,60 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # ADR-0090 stage L1: the workspace builds, lints and tests on Linux. This is a
+  # build baseline, not Linux product support. The crates that link the Cubism
+  # Core are excluded from the test run until stage L2 vendors the Linux Core.
+  linux-workspace:
+    name: Test workspace (ubuntu-latest)
+    if: needs.filter-paths.outputs.docs-only != 'true'
+    needs: filter-paths
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.97.1
+          components: clippy, rustfmt
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes --no-install-recommends \
+            pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev \
+            libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libvulkan-dev
+      - name: Cache Cargo artifacts
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            target/debug/
+          key: ${{ runner.os }}-linux-workspace-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'rust-toolchain.toml', 'crates/**/Cargo.toml') }}
+          restore-keys: |
+            ${{ runner.os }}-linux-workspace-
+      - name: Run Clippy
+        run: |
+          cargo clippy --manifest-path Cargo.toml --locked --workspace --all-targets --all-features --exclude bongocat-app -- -D warnings
+          cargo clippy --manifest-path Cargo.toml --locked -p bongocat-app --all-targets --features storage-test-injection -- -D warnings
+          cargo clippy --manifest-path Cargo.toml --locked -p bongocat-app --all-targets --features production -- -D warnings
+      - name: Run tests that do not link the Cubism Core
+        run: |
+          cargo test --manifest-path Cargo.toml --locked --workspace \
+            --exclude bongocat-app --exclude bongocat-live2d --exclude bongocat-overlay \
+            --exclude bongocat-runtime --exclude bongocat-ui
+      - name: Collect redacted failure evidence
+        if: ${{ failure() }}
+        shell: bash
+        run: python3 tools/collect-failure-evidence.py --input "$RUNNER_TEMP" --output "$RUNNER_TEMP/bongocat-failure-evidence" --platform "${{ runner.os }}"
+      - name: Upload redacted failure evidence
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: failure-evidence-linux-workspace
+          path: ${{ runner.temp }}/bongocat-failure-evidence
+          if-no-files-found: error
+          retention-days: 7
+
   product-smoke:
     name: Smoke product (${{ matrix.os }})
     if: needs.filter-paths.outputs.docs-only != 'true'

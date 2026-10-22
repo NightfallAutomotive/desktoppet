@@ -49,6 +49,8 @@ pub struct ProductOverlaySession {
     pub(crate) inner: macos::ProductOverlaySession,
     #[cfg(target_os = "windows")]
     pub(crate) inner: windows::ProductOverlaySession,
+    #[cfg(target_os = "linux")]
+    pub(crate) inner: linux::ProductOverlaySession,
 }
 
 /// A right-click on the model window. The application owns menu presentation
@@ -135,6 +137,20 @@ impl ProductOverlaySession {
             )
             .map(|inner| Self { inner })
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            linux::ProductOverlaySession::start(
+                runtime_client,
+                input_producer,
+                cursor_producer,
+                gamepad_axis_producer,
+                render_consumer,
+                options,
+                interaction_sinks,
+            )
+            .map(|inner| Self { inner })
+        }
     }
 
     pub fn run_for(&mut self, duration: Duration) -> Result<(), OverlayError> {
@@ -144,6 +160,11 @@ impl ProductOverlaySession {
         }
 
         #[cfg(target_os = "windows")]
+        {
+            self.inner.run_for(duration)
+        }
+
+        #[cfg(target_os = "linux")]
         {
             self.inner.run_for(duration)
         }
@@ -159,6 +180,11 @@ impl ProductOverlaySession {
         {
             self.inner.tick()
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.tick()
+        }
     }
 
     pub fn window_bounds(&self) -> Result<OverlayWindowBounds, OverlayError> {
@@ -168,6 +194,11 @@ impl ProductOverlaySession {
         }
 
         #[cfg(target_os = "windows")]
+        {
+            self.inner.window_bounds()
+        }
+
+        #[cfg(target_os = "linux")]
         {
             self.inner.window_bounds()
         }
@@ -216,6 +247,11 @@ impl ProductOverlaySession {
         {
             self.inner.stop_input()
         }
+
+        #[cfg(target_os = "linux")]
+        {
+            self.inner.stop_input()
+        }
     }
 
     pub fn finish_after_runtime_shutdown(self) -> Result<ProductOverlayReport, OverlayError> {
@@ -225,6 +261,11 @@ impl ProductOverlaySession {
         }
 
         #[cfg(target_os = "windows")]
+        {
+            self.inner.finish_after_runtime_shutdown()
+        }
+
+        #[cfg(target_os = "linux")]
         {
             self.inner.finish_after_runtime_shutdown()
         }

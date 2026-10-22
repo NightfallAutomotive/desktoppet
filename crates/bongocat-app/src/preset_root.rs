@@ -39,7 +39,14 @@ pub(crate) fn bundled_preset_root(executable: &Path) -> Option<PathBuf> {
     executable_relative_preset_root(executable)
 }
 
-#[cfg(any(target_os = "windows", test))]
+/// Linux has no bundle format yet (ADR-0090 stage L7 decides the AppImage
+/// layout), so presets sit beside the executable as they do on Windows.
+#[cfg(target_os = "linux")]
+pub(crate) fn bundled_preset_root(executable: &Path) -> Option<PathBuf> {
+    executable_relative_preset_root(executable)
+}
+
+#[cfg(any(target_os = "windows", target_os = "linux", test))]
 pub(crate) fn executable_relative_preset_root(executable: &Path) -> Option<PathBuf> {
     Some(executable.parent()?.join("resources/models"))
 }

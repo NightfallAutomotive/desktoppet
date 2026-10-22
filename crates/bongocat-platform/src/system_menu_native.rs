@@ -1,3 +1,8 @@
+// The context menu only has a window to attach to on Windows and macOS; Linux
+// reports `UnsupportedWindowHandle` until the ADR-0090 stage L4 overlay exists.
+// Remove this exemption then.
+#![cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
+
 use crate::{SystemMenuAction, SystemMenuError, SystemMenuPresentation};
 use image::ImageReader;
 use muda::{
@@ -30,6 +35,8 @@ const QUIT_ID: &str = "bongocat.quit";
 #[cfg(target_os = "macos")]
 const STATUS_ICON_BYTES: &[u8] = include_bytes!("../../../resources/icons/tray-macos.png");
 #[cfg(target_os = "windows")]
+const STATUS_ICON_BYTES: &[u8] = include_bytes!("../../../resources/icons/tray-windows.png");
+#[cfg(target_os = "linux")]
 const STATUS_ICON_BYTES: &[u8] = include_bytes!("../../../resources/icons/tray-windows.png");
 
 /// The platform owner for both native menu surfaces.

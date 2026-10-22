@@ -84,6 +84,10 @@ const TARGETS: &[Target] = &[
         rust: "x86_64-apple-darwin",
         clang: "x86_64-apple-darwin",
     },
+    Target {
+        rust: "x86_64-unknown-linux-gnu",
+        clang: "x86_64-unknown-linux-gnu",
+    },
 ];
 
 #[derive(Debug)]

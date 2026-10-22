@@ -511,6 +511,59 @@ mod platform {
     }
 }
 
+/// Linux reads keyboard and mouse edges from evdev, which needs read access to the
+/// `/dev/input/event*` nodes, normally through membership in the `input` group (ADR-0090).
+///
+/// The check is the capability itself rather than the group name: a seat ACL or a
+/// differently named group grants the same access, and a group the session has not picked
+/// up yet (membership changed without logging out) grants none. The product never asks for
+/// elevation, so the permission flow has nothing to open on the user's behalf; the prompt
+/// carries the guidance and the flow reports that no platform action was taken.
+#[cfg(target_os = "linux")]
+mod platform {
+    use crate::StartupPermissionPrompt;
+    use std::{fs, path::Path};
+
+    pub const CAPABILITY: &str = "input_devices";
+
+    const INPUT_DEVICE_DIRECTORY: &str = "/dev/input";
+
+    pub fn available() -> bool {
+        any_event_device_is_readable(Path::new(INPUT_DEVICE_DIRECTORY))
+    }
+
+    pub fn present_prompt(prompt: &StartupPermissionPrompt) -> rfd::MessageDialogResult {
+        rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title(prompt.title.clone())
+            .set_description(prompt.description.clone())
+            .set_buttons(rfd::MessageButtons::OkCancelCustom(
+                prompt.primary.clone(),
+                prompt.secondary.clone(),
+            ))
+            .show()
+    }
+
+    pub fn request_permission_flow(_locale: &str) -> bool {
+        false
+    }
+
+    /// Whether at least one `event*` node in `directory` opens for reading. Opening is
+    /// the whole test: nothing is read, and the handle closes when it is dropped.
+    pub(super) fn any_event_device_is_readable(directory: &Path) -> bool {
+        let Ok(entries) = fs::read_dir(directory) else {
+            return false;
+        };
+        entries.flatten().any(|entry| {
+            entry
+                .file_name()
+                .to_str()
+                .is_some_and(|name| name.starts_with("event"))
+                && fs::File::open(entry.path()).is_ok()
+        })
+    }
+}
+
 /// Maps an `rfd` result back to "the user asked for the platform permission flow".
 ///
 /// macOS returns the custom label, because the parentless dialog is a `CFUserNotification` whose
@@ -711,11 +764,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_input_capability_requires_a_readable_event_node() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        assert!(!platform::any_event_device_is_readable(directory.path()));
+        std::fs::write(directory.path().join("mouse0"), b"").expect("non-event node");
+        assert!(!platform::any_event_device_is_readable(directory.path()));
+        std::fs::write(directory.path().join("event3"), b"").expect("event node");
+        assert!(platform::any_event_device_is_readable(directory.path()));
+        assert!(!platform::any_event_device_is_readable(
+            &directory.path().join("missing")
+        ));
+    }
+
     #[test]
     fn capability_name_is_stable_and_anonymous() {
         assert!(matches!(
             STARTUP_PERMISSION_CAPABILITY,
-            "input_monitoring" | "administrator"
+            "input_monitoring" | "administrator" | "input_devices"
         ));
     }
 }

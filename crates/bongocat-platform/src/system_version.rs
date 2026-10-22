@@ -14,6 +14,13 @@
 //! | [`version`](OperatingSystemVersion::version) | `kern.osproductversion` — "15.6" | major/minor under `CurrentVersion` — "10.0" |
 //! | [`build`](OperatingSystemVersion::build) | `kern.osversion` — "24G90" | `CurrentBuildNumber` + `UBR` — "22631.4169" |
 //!
+//! Linux has no single system version, so it reports the two facts a Linux bug
+//! report needs: the distribution from `os-release` (`ID` and `VERSION_ID`,
+//! "fedora-44") as the version, and the running kernel release from
+//! `/proc/sys/kernel/osrelease` ("6.17.1-300.fc44.x86_64") as the build.
+//! `/etc/os-release` is read first and `/usr/lib/os-release` second, the order
+//! the `os-release(5)` specification gives.
+//!
 //! macOS is read through `sysctlbyname` rather than `NSProcessInfo` on purpose:
 //! `operatingSystemVersion` answers with the compatibility version a process
 //! linked against an older SDK sees, while the kernel's own `kern.os*` keys
@@ -131,6 +138,61 @@ mod platform {
     }
 }
 
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::OperatingSystemVersion;
+    use std::fs;
+
+    const OS_RELEASE_PATHS: [&str; 2] = ["/etc/os-release", "/usr/lib/os-release"];
+    const KERNEL_RELEASE_PATH: &str = "/proc/sys/kernel/osrelease";
+
+    pub(super) fn version() -> Option<OperatingSystemVersion> {
+        let os_release = OS_RELEASE_PATHS
+            .iter()
+            .find_map(|path| fs::read_to_string(path).ok())?;
+        Some(OperatingSystemVersion {
+            version: distribution_version(&os_release)?,
+            build: kernel_release(&fs::read_to_string(KERNEL_RELEASE_PATH).ok()?)?,
+        })
+    }
+
+    /// `ID` and `VERSION_ID` joined by `-`, the one separator both fields already
+    /// use. A rolling distribution has no `VERSION_ID`, so its `ID` alone is the
+    /// version.
+    pub(super) fn distribution_version(os_release: &str) -> Option<String> {
+        let id = os_release_value(os_release, "ID")?;
+        Some(match os_release_value(os_release, "VERSION_ID") {
+            Some(version) => format!("{id}-{version}"),
+            None => id,
+        })
+    }
+
+    pub(super) fn kernel_release(contents: &str) -> Option<String> {
+        let release = contents.trim();
+        (!release.is_empty() && !release.contains('\0')).then(|| release.to_owned())
+    }
+
+    /// One `KEY=value` assignment, with the optional shell quoting `os-release(5)`
+    /// allows removed. An empty or control-character value is reported as absent.
+    fn os_release_value(os_release: &str, key: &str) -> Option<String> {
+        let raw = os_release.lines().find_map(|line| {
+            line.trim()
+                .strip_prefix(key)
+                .and_then(|rest| rest.strip_prefix('='))
+        })?;
+        let value = raw
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .or_else(|| {
+                raw.strip_prefix('\'')
+                    .and_then(|rest| rest.strip_suffix('\''))
+            })
+            .unwrap_or(raw)
+            .trim();
+        (!value.is_empty() && !value.chars().any(char::is_control)).then(|| value.to_owned())
+    }
+}
+
 #[cfg(target_os = "windows")]
 mod platform {
     use super::OperatingSystemVersion;
@@ -232,6 +294,24 @@ mod platform {
 #[cfg(test)]
 mod tests {
     use super::operating_system_version;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_version_joins_distribution_fields_and_trims_the_kernel_release() {
+        use super::platform::{distribution_version, kernel_release};
+
+        let quoted = "NAME=\"Fedora Linux\"\nID=fedora\nVERSION_ID=\"44\"\n";
+        assert_eq!(distribution_version(quoted).as_deref(), Some("fedora-44"));
+        let rolling = "ID='arch'\nBUILD_ID=rolling\n";
+        assert_eq!(distribution_version(rolling).as_deref(), Some("arch"));
+        assert_eq!(distribution_version("VERSION_ID=44\n"), None);
+        assert_eq!(distribution_version("ID=\"\"\n"), None);
+        assert_eq!(
+            kernel_release("6.17.1-300.fc44.x86_64\n").as_deref(),
+            Some("6.17.1-300.fc44.x86_64")
+        );
+        assert_eq!(kernel_release("\n"), None);
+    }
 
     /// Both supported platforms have to answer, not just the one this test runs
     /// on: a system that names no version produces a report that is missing the

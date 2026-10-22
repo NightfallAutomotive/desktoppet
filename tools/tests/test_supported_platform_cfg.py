@@ -1,7 +1,13 @@
-"""Keep cfg predicates on the supported Windows/macOS platform set.
+"""Keep cfg predicates on the supported platform set and out of shared crates.
 
-Linux is not a shipped target. A temporary compatibility union would make code
-compile for a platform the contract test or release matrix is expected to catch.
+A temporary macOS/Windows compatibility union would make code compile for a
+platform the contract test or release matrix is expected to catch, so it stays
+forbidden everywhere.
+
+Linux is staged by ADR-0090. A `target_os = "linux"` predicate is allowed only in
+the crates that already own a per-platform branch (the platform adapters and the
+product crates that select between them); the platform-neutral contract crates
+must never learn about Linux, exactly as they never learn about macOS or Windows.
 """
 
 import re
@@ -18,8 +24,31 @@ MACOS = 'target_os = "macos"'
 WINDOWS = 'target_os = "windows"'
 LINUX = 'target_os = "linux"'
 
+# ADR-0090 "Platform boundary": the only crates a Linux cfg may appear in.
+LINUX_CFG_CRATES = frozenset(
+    {
+        "bongocat-app",
+        "bongocat-config",
+        "bongocat-i18n",
+        "bongocat-live2d",
+        "bongocat-overlay",
+        "bongocat-packaging",
+        "bongocat-platform",
+        "bongocat-ui",
+        "bongocat-update",
+    }
+)
 
-def scan_rust_file(path):
+
+def crate_name(path, root=CRATES):
+    """The workspace crate a source file belongs to, or None outside ``root``."""
+    try:
+        return path.relative_to(root).parts[0]
+    except (ValueError, IndexError):
+        return None
+
+
+def scan_rust_file(path, linux_allowed=False):
     """Return ``(line_number, line, reason)`` for every forbidden cfg line."""
     source = path.read_text(encoding="utf-8")
     line_start = 1
@@ -28,8 +57,8 @@ def scan_rust_file(path):
         line_number = line_start + source[: match.start()].count("\n")
         line = source.splitlines()[line_number - 1]
         reasons = []
-        if LINUX in expression:
-            reasons.append("linux target_os")
+        if LINUX in expression and not linux_allowed:
+            reasons.append("linux target_os outside an ADR-0090 adapter crate")
         for any_expression in ANY_EXPRESSION.finditer(expression):
             if MACOS in any_expression.group(1) and WINDOWS in any_expression.group(1):
                 reasons.append("macOS+Windows any() union")
@@ -42,7 +71,8 @@ def scan_rust_file(path):
 def offenders(root=CRATES):
     lines = []
     for path in sorted(root.rglob("*.rs")):
-        for line_number, line, reason in scan_rust_file(path):
+        linux_allowed = crate_name(path, root) in LINUX_CFG_CRATES
+        for line_number, line, reason in scan_rust_file(path, linux_allowed):
             lines.append(f"{path}:{line_number}: {reason}: {line}")
     return lines
 
@@ -65,6 +95,38 @@ class SupportedPlatformCfgDetectorTests(unittest.TestCase):
         self.assertEqual(len(reported), len(cases))
         for name in cases:
             self.assertTrue(any(f"/{name}:1:" in line for line in reported), reported)
+
+    def test_linux_cfg_is_allowed_only_in_adapter_crates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for crate in ("bongocat-platform", "bongocat-runtime"):
+                source = root / crate / "src"
+                source.mkdir(parents=True)
+                (source / "lib.rs").write_text(
+                    '#[cfg(target_os = "linux")]\n'
+                    '#[cfg(any(target_os = "macos", target_os = "windows"))]\n',
+                    encoding="utf-8",
+                )
+
+            reported = offenders(root)
+
+        self.assertEqual(
+            sorted(line.split(": ", 2)[1] for line in reported),
+            [
+                "linux target_os outside an ADR-0090 adapter crate",
+                "macOS+Windows any() union",
+                "macOS+Windows any() union",
+            ],
+            reported,
+        )
+        self.assertTrue(
+            all(
+                "bongocat-runtime" in line
+                for line in reported
+                if "linux" in line
+            ),
+            reported,
+        )
 
     def test_supported_cfgs_pass(self):
         source = "\n".join(

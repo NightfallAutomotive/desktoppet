@@ -27,7 +27,7 @@ fn configuration(channel: ReleaseChannel) -> ReleaseConfiguration {
         repository_name: "BongoCat",
         binary_name: "bongocat-app",
         bundle_name: Some("BongoCat.app"),
-        target: UpdateTargetTriple::Aarch64AppleDarwin,
+        target: Some(UpdateTargetTriple::Aarch64AppleDarwin),
     }
 }
 
@@ -123,7 +123,7 @@ fn the_manifest_endpoint_is_the_shared_release_manifest() {
         UpdateTargetTriple::X86_64PcWindowsMsvc,
     ] {
         let mut configuration = configuration(ReleaseChannel::Production);
-        configuration.target = target;
+        configuration.target = Some(target);
         assert_eq!(
             UpdateRuntime::manifest_endpoint(configuration)
                 .expect("every shipped target produces a valid URL"),
@@ -542,6 +542,26 @@ fn unavailability_names_the_gate_that_closed() {
         runtime_for(ReleaseChannel::Production).unavailability(),
         None
     );
+}
+
+/// A platform without a release artifact is closed before the channel is asked,
+/// so a Linux Production build never reads a manifest it has no entry in.
+#[test]
+fn a_build_without_a_release_target_is_an_unsupported_platform() {
+    for channel in [ReleaseChannel::Production, ReleaseChannel::Development] {
+        let mut configuration = configuration(channel);
+        configuration.target = None;
+        let runtime = UpdateRuntime::new(
+            configuration,
+            env!("CARGO_PKG_VERSION"),
+            UpdateDiagnosticsTracker::default(),
+        );
+        assert_eq!(
+            runtime.unavailability(),
+            Some(UpdateUnavailability::UnsupportedPlatform)
+        );
+        assert!(!runtime.is_available());
+    }
 }
 
 /// The release identity constants describe what the packaging pipeline ships.

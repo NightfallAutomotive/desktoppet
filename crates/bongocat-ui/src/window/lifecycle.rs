@@ -239,6 +239,10 @@ fn settings_window_content_top_inset() -> f32 {
     {
         0.0
     }
+    #[cfg(target_os = "linux")]
+    {
+        0.0
+    }
 }
 
 fn rounded_f32_i32(value: f32) -> Option<i32> {

@@ -142,6 +142,13 @@ pub(crate) fn wait_and_pump(interval: Duration) {
     std::thread::sleep(interval);
 }
 
+/// `global-hotkey` reads X11 key events on a thread of its own, so the owner only waits. It
+/// reaches X11 clients only; the Wayland `GlobalShortcuts` portal is ADR-0090 stage L6.
+#[cfg(target_os = "linux")]
+pub(crate) fn wait_and_pump(interval: Duration) {
+    std::thread::sleep(interval);
+}
+
 #[cfg(target_os = "windows")]
 pub(crate) fn wait_and_pump(interval: Duration) {
     use windows::Win32::UI::WindowsAndMessaging::{

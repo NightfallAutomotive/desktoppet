@@ -5,6 +5,10 @@
     windows_subsystem = "windows"
 )]
 #![forbid(unsafe_code)]
+// Linux stops at the overlay start until ADR-0090 stage L4, so the frame-loop
+// helpers only the running overlay uses have no caller there yet. Remove this
+// exemption when the Linux overlay session lands.
+#![cfg_attr(target_os = "linux", allow(dead_code, unused_variables))]
 
 //! The product entry point: start every subsystem, hand the windows to GPUI and
 //! own the run loop.
@@ -192,6 +196,8 @@ struct ProductCoordinator {
     overlay: Option<ProductOverlaySession>,
     #[cfg(target_os = "windows")]
     overlay: Rc<RefCell<Option<ProductOverlaySession>>>,
+    #[cfg(target_os = "linux")]
+    overlay: Option<ProductOverlaySession>,
     settings_service: Option<bongocat_app::ApplicationSettingsService>,
     /// The currently open settings window, if any; close destroys it.
     settings_window: Option<SettingsWindowHandle>,
@@ -610,6 +616,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             overlay: Some(overlay),
             #[cfg(target_os = "windows")]
             overlay,
+            #[cfg(target_os = "linux")]
+            overlay: Some(overlay),
             settings_service: Some(settings_service),
             settings_window: None,
             settings_navigation_memory: SettingsNavigationMemory::new(),
@@ -1127,10 +1135,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut frame_active = true;
             #[cfg(target_os = "windows")]
             let mut shutdown_flush_started = false;
-            let mut last_overlay_bounds = None;
+            let mut last_overlay_bounds: Option<OverlayWindowBounds> = None;
             let mut overlay_placement_debouncer = OverlayPlacementDebouncer::default();
             let mut gamepad_connections = GamepadConnectionObserver::default();
-            let mut retry_delay = None;
+            let mut retry_delay: Option<Duration> = None;
             let mut frame_pacer: Option<bongocat_runtime::FramePacer> = None;
             loop {
                 // Only the pacing inputs are read here. The overlay session reads
@@ -1258,6 +1266,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 {
                     retry_delay = next_retry_delay;
                 }
+                // Linux never reaches a running frame source: the overlay session
+                // reports `overlay_unsupported_on_linux` and startup quits before
+                // this loop. The real Linux frame loop is ADR-0090 stage L4.
+                #[cfg(target_os = "linux")]
+                let keep_running = {
+                    let _ = (
+                        context_menu_requested,
+                        resize_outcome,
+                        &mut last_overlay_bounds,
+                        &mut retry_delay,
+                    );
+                    false
+                };
                 #[cfg(target_os = "windows")]
                 let (tick_result, system_termination_requested) = if frame_active {
                     let mut overlay = frame_overlay.borrow_mut();

@@ -227,16 +227,11 @@ impl RunOptions {
     }
 
     pub(crate) fn opens_settings_window_on_start(&self) -> bool {
-        let mut opens_settings_window =
-            self.settings_window_smoke || self.settings_window_open_smoke;
+        let opens_settings_window = self.settings_window_smoke || self.settings_window_open_smoke;
         #[cfg(target_os = "macos")]
-        {
-            opens_settings_window |= self.application_reopen_smoke;
-        }
+        let opens_settings_window = opens_settings_window || self.application_reopen_smoke;
         #[cfg(target_os = "windows")]
-        {
-            opens_settings_window |= self.single_instance_smoke;
-        }
+        let opens_settings_window = opens_settings_window || self.single_instance_smoke;
         opens_settings_window
     }
 }

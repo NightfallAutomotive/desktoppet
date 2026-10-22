@@ -397,6 +397,32 @@ mod platform {
     }
 }
 
+/// Linux has no process-wide or per-window native theme switch for the surfaces in scope.
+/// GPUI draws the product windows itself, and the portal dialogs, notification prompts and
+/// StatusNotifierItem menus are drawn by the desktop, which follows the user's own
+/// `org.freedesktop.appearance.color-scheme`. Every entry point is therefore a documented
+/// no-op (ADR-0048, ADR-0090).
+#[cfg(target_os = "linux")]
+mod platform {
+    use super::{AppTheme, NativeThemeError};
+    use raw_window_handle::HasWindowHandle;
+
+    pub(super) fn apply_process(_theme: Option<AppTheme>) -> Result<(), NativeThemeError> {
+        Ok(())
+    }
+
+    pub(super) fn apply(
+        _window: &impl HasWindowHandle,
+        _theme: Option<AppTheme>,
+    ) -> Result<(), NativeThemeError> {
+        Ok(())
+    }
+
+    pub(super) fn init() -> Result<(), NativeThemeError> {
+        Ok(())
+    }
+}
+
 #[cfg(target_os = "macos")]
 pub use platform::system_appearance;
 

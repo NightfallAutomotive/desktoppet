@@ -69,5 +69,6 @@ pub(crate) const fn unavailable_reason(reason: UpdateUnavailability) -> UpdateUn
     match reason {
         UpdateUnavailability::DevelopmentChannel => UpdateUnavailableReason::DevelopmentBuild,
         UpdateUnavailability::SigningKeyMissing => UpdateUnavailableReason::SigningKeyMissing,
+        UpdateUnavailability::UnsupportedPlatform => UpdateUnavailableReason::UnsupportedPlatform,
     }
 }

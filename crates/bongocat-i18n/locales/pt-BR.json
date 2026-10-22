@@ -45,6 +45,11 @@
       "title": "Recomendado executar com acesso de administrador",
       "description": "O BongoCat precisa de acesso de administrador para continuar recebendo a entrada do teclado e do mouse enquanto outro aplicativo é executado com privilégios de administrador.\n\nPara configurar: clique com o botão direito em BongoCat → Propriedades → Compatibilidade → ative \"Executar este programa como administrador\".",
       "open_program_folder": "Sair e abrir as configurações"
+    },
+    "input_devices": {
+      "title": "Acesso aos dispositivos de entrada necessário",
+      "description": "O BongoCat lê a entrada do teclado e do mouse diretamente dos seus dispositivos. Ele usa isso apenas para a animação e nunca registra o que você digita.\n\nPara configurar, adicione sua conta ao grupo \"input\" (por exemplo: sudo usermod -aG input $USER) e depois saia e entre novamente na sessão.",
+      "acknowledge": "Entendi"
     }
   },
   "about": {
@@ -215,7 +220,8 @@
     },
     "unavailable": {
       "development_build": "Builds de desenvolvimento não podem instalar atualizações de lançamento.",
-      "signing_key_missing": "Esta versão não pode verificar atualizações, portanto a atualização está desativada."
+      "signing_key_missing": "Esta versão não pode verificar atualizações, portanto a atualização está desativada.",
+      "unsupported_platform": "As atualizações ainda não estão disponíveis para esta plataforma."
     },
     "about": {
       "label": "Verificar atualizações"

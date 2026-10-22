@@ -16,6 +16,11 @@ pub(crate) fn window_mode_active(overlay: Option<SettingsOverlay>) -> bool {
         let _ = overlay;
         false
     }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = overlay;
+        false
+    }
 }
 
 #[cfg(test)]

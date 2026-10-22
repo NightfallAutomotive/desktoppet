@@ -103,6 +103,8 @@ fn host_platform_key() -> String {
         "macos"
     } else if cfg!(target_os = "windows") {
         "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
     } else {
         unreachable!("the capability test runs on a shipped platform")
     };

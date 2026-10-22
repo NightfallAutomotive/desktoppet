@@ -65,6 +65,11 @@ pub fn run_model_switch_preview(
     {
         windows::run_model_switch_preview(model_id, model_root, switch_cycles)
     }
+
+    #[cfg(target_os = "linux")]
+    {
+        linux::run_model_switch_preview(model_id, model_root, switch_cycles)
+    }
 }
 
 pub(crate) fn validate_model_generation_advance(

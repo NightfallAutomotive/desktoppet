@@ -486,6 +486,11 @@ pub(crate) fn product_overlay_state(cx: &mut App) -> Result<(u64, bool), String>
     let overlay = overlay
         .as_ref()
         .ok_or_else(|| "product overlay is unavailable".to_owned())?;
+    #[cfg(target_os = "linux")]
+    let overlay = coordinator
+        .overlay
+        .as_ref()
+        .ok_or_else(|| "product overlay is unavailable".to_owned())?;
     Ok((overlay.model_generation(), overlay.is_visible()))
 }
 

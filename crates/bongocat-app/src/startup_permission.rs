@@ -33,6 +33,13 @@ mod keys {
     pub(super) const DESCRIPTION: &str = "startup_permission.administrator.description";
     #[cfg(target_os = "windows")]
     pub(super) const PRIMARY: &str = "startup_permission.administrator.open_program_folder";
+
+    #[cfg(target_os = "linux")]
+    pub(super) const TITLE: &str = "startup_permission.input_devices.title";
+    #[cfg(target_os = "linux")]
+    pub(super) const DESCRIPTION: &str = "startup_permission.input_devices.description";
+    #[cfg(target_os = "linux")]
+    pub(super) const PRIMARY: &str = "startup_permission.input_devices.acknowledge";
 }
 
 /// Runs the startup permission check for this platform.

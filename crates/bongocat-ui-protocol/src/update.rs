@@ -24,6 +24,8 @@ pub enum UpdateUnavailableReason {
     DevelopmentBuild,
     /// No release signing key is provisioned, so nothing could be authenticated.
     SigningKeyMissing,
+    /// No release is published for this platform yet.
+    UnsupportedPlatform,
 }
 
 /// The stage an update stopped in.

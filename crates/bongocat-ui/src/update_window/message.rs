@@ -103,6 +103,7 @@ pub(crate) fn unavailable_message(locale: &str, reason: UpdateUnavailableReason)
     let key = match reason {
         UpdateUnavailableReason::DevelopmentBuild => "update.unavailable.development_build",
         UpdateUnavailableReason::SigningKeyMissing => "update.unavailable.signing_key_missing",
+        UpdateUnavailableReason::UnsupportedPlatform => "update.unavailable.unsupported_platform",
     };
     text(locale, key).to_owned()
 }

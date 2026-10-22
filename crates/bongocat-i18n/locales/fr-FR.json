@@ -45,6 +45,11 @@
       "title": "Exécution en tant qu’administrateur recommandée",
       "description": "BongoCat a besoin des droits d’administrateur pour continuer à recevoir les saisies du clavier et de la souris lorsqu’une autre application s’exécute avec des privilèges d’administrateur.\n\nPour le configurer : clic droit sur BongoCat → Propriétés → Compatibilité → activez « Exécuter ce programme en tant qu’administrateur ».",
       "open_program_folder": "Quitter et ouvrir les paramètres"
+    },
+    "input_devices": {
+      "title": "Accès aux périphériques d’entrée requis",
+      "description": "BongoCat lit les entrées du clavier et de la souris directement depuis vos périphériques. Il s’en sert uniquement pour l’animation et n’enregistre jamais ce que vous tapez.\n\nPour le configurer, ajoutez votre compte au groupe « input » (par exemple : sudo usermod -aG input $USER), puis déconnectez-vous et reconnectez-vous.",
+      "acknowledge": "Compris"
     }
   },
   "about": {
@@ -215,7 +220,8 @@
     },
     "unavailable": {
       "development_build": "Les versions de développement ne peuvent pas installer les mises à jour publiées.",
-      "signing_key_missing": "Cette version ne peut pas vérifier les mises à jour, la mise à jour est donc désactivée."
+      "signing_key_missing": "Cette version ne peut pas vérifier les mises à jour, la mise à jour est donc désactivée.",
+      "unsupported_platform": "Les mises à jour ne sont pas encore disponibles sur cette plateforme."
     },
     "about": {
       "label": "Rechercher des mises à jour"

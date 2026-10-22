@@ -2276,7 +2276,7 @@ finish 1
 }
 
 /// Makes a staged file runnable by whoever opens the image.
-#[cfg(unix)]
+#[cfg(target_os = "macos")]
 fn make_executable(path: &Path) -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     let mut permissions = fs::metadata(path)?.permissions();

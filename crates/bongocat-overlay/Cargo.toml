@@ -26,6 +26,9 @@ objc2-app-kit = { version = "=0.3.2", default-features = false, features = ["NSA
 objc2-foundation = { version = "=0.3.2", default-features = false, features = ["NSDate", "NSGeometry", "NSObjCRuntime", "NSObject", "NSRunLoop", "NSString", "objc2-core-foundation"] }
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-metal"] }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+image.workspace = true
+
 [target.'cfg(target_os = "windows")'.dependencies]
 image.workspace = true
 windows = { version = "=0.62.2", features = [
