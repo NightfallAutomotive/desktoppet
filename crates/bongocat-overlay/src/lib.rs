@@ -5,10 +5,11 @@
 //! a frame of it contained, and when it is really visible. The modules below are
 //! those questions; the platform sessions beside them own the two implementations.
 
-// The Linux session does not use the pointer-driven shared logic yet: resize drag,
-// the placement constraint and hover hide arrive with the pointer work of
-// ADR-0090 stage L4, and idle hide needs the stage L5 input service. Remove this
-// exemption when those land.
+// Shared logic the Linux session cannot use yet (ADR-0090): hover hide has no
+// Wayland equivalent (it needs a global pointer; the X11 backend can use it),
+// idle hide needs the stage L5 input service, and the presentation-state and
+// window-recreation helpers belong to the macOS/Windows sessions. Remove this
+// exemption once the X11 backend and stage L5 give them Linux callers.
 #![cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
 #[cfg(target_os = "linux")]
 mod linux;

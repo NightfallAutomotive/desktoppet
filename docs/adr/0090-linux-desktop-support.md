@@ -267,10 +267,24 @@ changes.
   dependencies (`wayland-client`, `wayland-backend` with `client_system`,
   `wayland-protocols`, `wayland-protocols-wlr`) were already in the graph
   through GPUI at their latest releases, MIT; no new crate enters the lockfile.
-- **Remaining for L4:** pointer interaction (drag, context menu, right-button
-  resize), hover hide, the keep-inside-screen constraint, multiple outputs, the
-  X11 backend, the hardware visual checklist, and removing the overlay crate's
-  Linux `dead_code` exemption.
+- **User confirmation.** The maintainer ran the Development product on KDE
+  Plasma Wayland and confirmed the cat appears transparent and on top.
+- **Pointer.** The window binds the seat's `wl_pointer` (and
+  `wp_cursor_shape_v1` for a defined cursor). A left-button drag moves the
+  window, measured from the last committed origin because surface coordinates
+  are relative to the window the compositor already has; a right-button drag
+  resizes it through the shared `ResizeDrag` (same threshold and mapping as the
+  other platforms) and writes the scale back through the resize sink; the
+  shared placement constraint keeps the window on its output. The drag rules
+  live in a Wayland-free `PointerInteraction` with unit tests.
+- **Not available, by design or for now.** Hover hide cannot exist on Wayland:
+  a client only sees the pointer over a surface that accepts input, and a
+  hidden pet passes input through, so it could never see the pointer leave. A
+  right-click without a drag shows no menu, because `muda` has no GTK-free
+  context menu; a Linux menu presentation is L6.
+- **Remaining for L4:** hardware check of drag and resize, multiple outputs,
+  the X11 backend (which can support hover hide), and removing the overlay
+  crate's Linux `dead_code` exemption.
 
 ## Consequences
 

@@ -5,11 +5,17 @@
 //! model when the new one cannot be prepared, settings apply every tick, and
 //! shutdown releases the window only after input and the runtime have stopped.
 //!
-//! What Linux cannot do yet is reported rather than faked. There is no platform
+//! The pointer is the window's own `wl_pointer`: a left-button drag moves the
+//! window, a right-button drag resizes it through the shared [`ResizeDrag`]
+//! state machine, and the shared placement constraint keeps it on its output.
+//!
+//! What Linux cannot do is reported rather than faked. There is no platform
 //! input service until ADR-0090 stage L5, so input starts as
-//! `BackendUnavailable`; the window is a Wayland layer surface placed relative
-//! to its output; dragging, resizing, hover hide, idle hide and the
-//! keep-inside-screen constraint arrive with the rest of stage L4.
+//! `BackendUnavailable`. A right-click without a drag shows no menu, because the
+//! menu library has no GTK-free context menu (stage L6). Hover hide is not
+//! available on Wayland at all: a client only sees the pointer over a surface
+//! that accepts input, and a hidden pet passes input through, so it could never
+//! notice the pointer leaving.
 
 use super::*;
 
@@ -41,6 +47,14 @@ pub(crate) struct ProductOverlaySession {
     model_commit_rejections: u64,
     input_start_error: Option<PlatformInputError>,
     input_stopped: bool,
+    resize_sender: Option<SyncSender<OverlayResizeOutcome>>,
+    pointer: PointerInteraction,
+    /// The window origin of the last presented frame. Pointer coordinates are
+    /// relative to the window the compositor has, which is the committed one,
+    /// so a drag is measured from here rather than from a pending move.
+    committed_origin: (i32, i32),
+    placement: OverlayPlacementConstraint,
+    session_started: Instant,
     display: WaylandDisplay,
 }
 
@@ -54,14 +68,13 @@ impl ProductOverlaySession {
         options: OverlaySessionOptions,
         interaction_sinks: OverlayInteractionSinks,
     ) -> Result<Self, OverlayError> {
-        // Input, pointer interaction and the context menu need the seat, which
-        // is the next step of stage L4 (pointer) and stage L5 (input).
-        let _ = (
-            input_producer,
-            cursor_producer,
-            gamepad_axis_producer,
-            interaction_sinks,
-        );
+        // Platform input is stage L5. The context menu has no GTK-free
+        // presentation yet (stage L6), so only the resize outcome is wired.
+        let _ = (input_producer, cursor_producer, gamepad_axis_producer);
+        let OverlayInteractionSinks {
+            context_menu_sender: _,
+            resize_sender,
+        } = interaction_sinks;
         let initial_frame = render_consumer
             .take_latest()
             .ok_or_else(|| OverlayError::new("runtime did not publish an initial render frame"))?;
@@ -99,6 +112,11 @@ impl ProductOverlaySession {
             model_commit_rejections: 0,
             input_start_error,
             input_stopped: false,
+            resize_sender,
+            pointer: PointerInteraction::default(),
+            committed_origin: (bounds.x, bounds.y),
+            placement: OverlayPlacementConstraint::default(),
+            session_started: Instant::now(),
             display,
         };
         session.apply_presentation();
@@ -195,9 +213,47 @@ impl ProductOverlaySession {
             .as_mut()
             .expect("the model window was just opened");
         window.present(&mut self.renderer, &self.display, verify)?;
+        self.committed_origin = (self.bounds.x, self.bounds.y);
         self.retry_backoff.record_success();
         self.frames_presented = self.frames_presented.saturating_add(1);
         Ok(())
+    }
+
+    fn apply_bounds(&mut self) {
+        if let Some(window) = &mut self.window {
+            window.window.set_bounds(self.bounds);
+        }
+    }
+
+    /// The window size a resize drag treats as `100%`: the size the window is
+    /// created with for the current model, as on macOS.
+    fn resize_base(&self) -> Option<ResizeBase> {
+        let (width, height) = default_overlay_window_dimensions(self.last_frame.snapshot.canvas);
+        ResizeBase::new(f64::from(width), f64::from(height))
+    }
+
+    fn bounds_match_scale(&self, scale_percent: u16) -> bool {
+        self.resize_base()
+            .is_some_and(|base| crate::bounds_match_scale(self.bounds, base, scale_percent))
+    }
+
+    /// Apply this tick's pointer events in the order they arrived.
+    fn handle_pointer(&mut self) {
+        for event in self.display.take_pointer_events() {
+            let outcome = self.pointer.handle(
+                event,
+                self.bounds,
+                self.committed_origin,
+                self.resize_base(),
+            );
+            if let Some(bounds) = outcome.bounds {
+                self.bounds = bounds;
+                self.apply_bounds();
+            }
+            if let (Some(scale_percent), Some(sender)) = (outcome.resized_to, &self.resize_sender) {
+                let _ = sender.try_send(OverlayResizeOutcome { scale_percent });
+            }
+        }
     }
 
     fn defer_drawable_unavailable(&mut self) -> OverlayTickOutcome {
@@ -251,18 +307,41 @@ impl ProductOverlaySession {
         let next_options = self
             .options
             .with_runtime_settings(runtime_snapshot.overlay_settings);
+        self.handle_pointer();
         if next_options != self.options {
-            if next_options.scale_percent != self.options.scale_percent {
+            // A resize drag already sized the window before its scale reached
+            // the configuration, so the scale it wrote back is not applied twice.
+            if next_options.scale_percent != self.options.scale_percent
+                && !self.bounds_match_scale(next_options.scale_percent)
+            {
                 self.bounds = self
                     .bounds
                     .rescale(self.options.scale_percent, next_options.scale_percent);
-                if let Some(window) = &mut self.window {
-                    window.window.set_bounds(self.bounds);
-                }
+                self.apply_bounds();
             }
             self.renderer.corner_radius_percent = next_options.corner_radius_percent;
             self.options = next_options;
             self.apply_presentation();
+        }
+        if self.options.keep_inside_screen
+            && !self.pointer.moving()
+            && let Some(window) = &self.window
+        {
+            let output = window.window.output_bounds();
+            let correction =
+                self.placement
+                    .observe(self.bounds, self.session_started.elapsed(), || {
+                        vec![OverlayScreenBounds {
+                            x: output.x,
+                            y: output.y,
+                            width: output.width,
+                            height: output.height,
+                        }]
+                    });
+            if let Some(correction) = correction {
+                self.bounds = correction;
+                self.apply_bounds();
+            }
         }
         self.options.maximum_fps = runtime_snapshot.maximum_fps;
         let overlay_visible = runtime_snapshot.overlay_visible;

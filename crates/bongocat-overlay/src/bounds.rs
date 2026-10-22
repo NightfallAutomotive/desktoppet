@@ -257,7 +257,7 @@ impl OverlayWindowBounds {
 /// new scale must not apply the ratio a second time. The one-pixel tolerance
 /// absorbs the rounding the physical-to-logical conversion introduces on the
 /// way back from the window system.
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 pub(crate) fn bounds_match_scale(
     bounds: OverlayWindowBounds,
     base: resize_drag::ResizeBase,

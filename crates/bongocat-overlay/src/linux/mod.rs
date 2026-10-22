@@ -13,6 +13,7 @@
 
 mod cover_capture;
 mod pipelines;
+mod pointer;
 mod renderer;
 mod session;
 #[cfg(test)]
@@ -22,6 +23,7 @@ mod window;
 
 pub(crate) use cover_capture::*;
 pub(crate) use pipelines::*;
+pub(crate) use pointer::*;
 pub(crate) use renderer::*;
 pub(crate) use session::*;
 pub(crate) use wayland::*;
@@ -29,13 +31,16 @@ pub(crate) use window::*;
 
 use crate::{
     BlendFactor, DrawableCullMode, FRAME_SMOKE_GRID_DIMENSION, FrameRetryBackoff, OverlayError,
-    OverlayInteractionSinks, OverlayScreenBounds, OverlaySessionOptions, OverlayTickOutcome,
-    OverlayWindowBounds, PreviewReport, ProductOverlayReport, blend_factors, corner_radius_uniform,
+    OverlayInteractionSinks, OverlayResizeOutcome, OverlayScreenBounds, OverlaySessionOptions,
+    OverlayTickOutcome, OverlayWindowBounds, PreviewReport, ProductOverlayReport, blend_factors,
+    corner_radius_uniform,
     cover::{
         COVER_CAPTURE_FRAMES, COVER_CAPTURE_SCALE_PERCENT, COVER_CAPTURE_TIMEOUT, CapturedFrame,
     },
-    drawable_cull_mode, model_switch_window_bounds, model_window_dimensions,
-    placement::bounds_inside_screens,
+    default_overlay_window_dimensions, drawable_cull_mode, model_switch_window_bounds,
+    model_window_dimensions,
+    placement::{OverlayPlacementConstraint, bounds_inside_screens},
+    resize_drag::{ResizeBase, ResizeDrag},
     validate_frame_smoke, validate_model_generation_advance,
 };
 use bongocat_model::CommittedModel;
@@ -59,6 +64,6 @@ use std::{
     collections::BTreeMap,
     path::Path,
     ptr::NonNull,
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, mpsc::SyncSender},
     time::{Duration, Instant},
 };

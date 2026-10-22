@@ -17,14 +17,20 @@
 
 use super::*;
 use wayland_client::{
-    Connection, Dispatch, EventQueue, Proxy, QueueHandle, delegate_noop,
+    Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop,
     globals::{GlobalList, GlobalListContents, registry_queue_init},
     protocol::{
         wl_compositor::WlCompositor,
+        wl_pointer::{self, ButtonState, WlPointer},
         wl_region::WlRegion,
         wl_registry::WlRegistry,
+        wl_seat::{self, Capability, WlSeat},
         wl_surface::{self, WlSurface},
     },
+};
+use wayland_protocols::wp::cursor_shape::v1::client::{
+    wp_cursor_shape_device_v1::{Shape, WpCursorShapeDeviceV1},
+    wp_cursor_shape_manager_v1::WpCursorShapeManagerV1,
 };
 use wayland_protocols::wp::{
     alpha_modifier::v1::client::{
@@ -80,10 +86,35 @@ struct WindowEvents {
     buffer_scale: Option<i32>,
 }
 
+/// The Linux input-event codes of the two buttons the model window uses.
+pub(crate) const BUTTON_LEFT: u32 = 0x110;
+pub(crate) const BUTTON_RIGHT: u32 = 0x111;
+
+/// One pointer event over the model window, in surface coordinates.
+///
+/// Events are queued in arrival order and drained by the session each tick, so
+/// a press, the motions after it and the release are seen in the order the
+/// compositor sent them even when they arrive within one frame.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum PointerEvent {
+    Enter { x: f64, y: f64 },
+    Leave,
+    Motion { x: f64, y: f64 },
+    Button { button: u32, pressed: bool },
+}
+
 #[derive(Default)]
 pub(crate) struct WaylandState {
     window: WindowEvents,
+    pointer: Option<WlPointer>,
+    cursor_shape_manager: Option<WpCursorShapeManagerV1>,
+    cursor_shape: Option<WpCursorShapeDeviceV1>,
+    pointer_events: Vec<PointerEvent>,
 }
+
+/// The longest pointer backlog kept between two ticks. A stalled frame loop
+/// must not grow it without bound; the oldest motions are the ones dropped.
+const MAXIMUM_POINTER_EVENTS: usize = 1024;
 
 struct Globals {
     compositor: WlCompositor,
@@ -91,6 +122,7 @@ struct Globals {
     viewporter: Option<WpViewporter>,
     fractional_scale: Option<WpFractionalScaleManagerV1>,
     alpha_modifier: Option<WpAlphaModifierV1>,
+    _seat: Option<WlSeat>,
 }
 
 /// The adapter's own Wayland connection and the globals it binds.
@@ -109,14 +141,28 @@ impl WaylandDisplay {
         let (globals, queue) = registry_queue_init::<WaylandState>(&connection)
             .map_err(|error| WaylandError::Protocol(error.to_string()))?;
         let handle = queue.handle();
+        let mut state = WaylandState {
+            cursor_shape_manager: globals.bind(&handle, 1..=1, ()).ok(),
+            ..WaylandState::default()
+        };
         let globals = bind_globals(&globals, &handle)?;
+        let mut queue = queue;
+        // The seat announces its capabilities; the pointer is created from them.
+        queue
+            .roundtrip(&mut state)
+            .map_err(|error| WaylandError::Protocol(error.to_string()))?;
         Ok(Self {
             connection,
             queue,
             handle,
-            state: WaylandState::default(),
+            state,
             globals,
         })
+    }
+
+    /// Every pointer event since the last call, oldest first.
+    pub(crate) fn take_pointer_events(&mut self) -> Vec<PointerEvent> {
+        std::mem::take(&mut self.state.pointer_events)
     }
 
     /// Send queued requests and handle whatever events have arrived, without
@@ -311,6 +357,7 @@ fn bind_globals(
         viewporter: globals.bind(qh, 1..=1, ()).ok(),
         fractional_scale: globals.bind(qh, 1..=1, ()).ok(),
         alpha_modifier: globals.bind(qh, 1..=1, ()).ok(),
+        _seat: globals.bind(qh, 5..=9, ()).ok(),
     })
 }
 
@@ -530,7 +577,105 @@ impl Dispatch<WpFractionalScaleV1, ()> for WaylandState {
     }
 }
 
+impl Dispatch<WlSeat, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        seat: &WlSeat,
+        event: wl_seat::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wl_seat::Event::Capabilities {
+            capabilities: WEnum::Value(capabilities),
+        } = event
+        else {
+            return;
+        };
+        let has_pointer = capabilities.contains(Capability::Pointer);
+        if has_pointer && state.pointer.is_none() {
+            let pointer = seat.get_pointer(qh, ());
+            state.cursor_shape = state
+                .cursor_shape_manager
+                .as_ref()
+                .map(|manager| manager.get_pointer(&pointer, qh, ()));
+            state.pointer = Some(pointer);
+        } else if !has_pointer && let Some(pointer) = state.pointer.take() {
+            if let Some(shape) = state.cursor_shape.take() {
+                shape.destroy();
+            }
+            pointer.release();
+        }
+    }
+}
+
+impl WaylandState {
+    fn push_pointer_event(&mut self, event: PointerEvent) {
+        if self.pointer_events.len() >= MAXIMUM_POINTER_EVENTS {
+            let Some(index) = self
+                .pointer_events
+                .iter()
+                .position(|queued| matches!(queued, PointerEvent::Motion { .. }))
+            else {
+                return;
+            };
+            self.pointer_events.remove(index);
+        }
+        self.pointer_events.push(event);
+    }
+}
+
+impl Dispatch<WlPointer, ()> for WaylandState {
+    fn event(
+        state: &mut Self,
+        _: &WlPointer,
+        event: wl_pointer::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            wl_pointer::Event::Enter {
+                serial,
+                surface_x,
+                surface_y,
+                ..
+            } => {
+                // An unset cursor is undefined on Wayland; ask for the normal
+                // arrow while the pointer is over the cat.
+                if let Some(shape) = &state.cursor_shape {
+                    shape.set_shape(serial, Shape::Default);
+                }
+                state.push_pointer_event(PointerEvent::Enter {
+                    x: surface_x,
+                    y: surface_y,
+                });
+            }
+            wl_pointer::Event::Leave { .. } => state.push_pointer_event(PointerEvent::Leave),
+            wl_pointer::Event::Motion {
+                surface_x,
+                surface_y,
+                ..
+            } => state.push_pointer_event(PointerEvent::Motion {
+                x: surface_x,
+                y: surface_y,
+            }),
+            wl_pointer::Event::Button {
+                button,
+                state: WEnum::Value(button_state),
+                ..
+            } => state.push_pointer_event(PointerEvent::Button {
+                button,
+                pressed: button_state == ButtonState::Pressed,
+            }),
+            _ => {}
+        }
+    }
+}
+
 delegate_noop!(WaylandState: ignore WlCompositor);
+delegate_noop!(WaylandState: ignore WpCursorShapeManagerV1);
+delegate_noop!(WaylandState: ignore WpCursorShapeDeviceV1);
 delegate_noop!(WaylandState: ignore WlRegion);
 delegate_noop!(WaylandState: ignore ZwlrLayerShellV1);
 delegate_noop!(WaylandState: ignore WpViewporter);

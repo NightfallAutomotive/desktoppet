@@ -290,3 +290,152 @@ fn product_window_smoke() {
     eprintln!("report: {report:?}");
     assert!(report.frames_presented > 1, "the window presented frames");
 }
+
+mod pointer_interaction {
+    use super::*;
+
+    const BOUNDS: OverlayWindowBounds = OverlayWindowBounds {
+        x: 100,
+        y: 50,
+        width: 350,
+        height: 203,
+    };
+
+    fn base() -> Option<ResizeBase> {
+        ResizeBase::new(350.0, 203.0)
+    }
+
+    fn feed(
+        interaction: &mut PointerInteraction,
+        bounds: &mut OverlayWindowBounds,
+        committed: (i32, i32),
+        events: &[PointerEvent],
+    ) -> Vec<PointerOutcome> {
+        events
+            .iter()
+            .map(|event| {
+                let outcome = interaction.handle(*event, *bounds, committed, base());
+                if let Some(next) = outcome.bounds {
+                    *bounds = next;
+                }
+                outcome
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_left_drag_moves_the_window_from_the_committed_origin() {
+        let mut interaction = PointerInteraction::default();
+        let mut bounds = BOUNDS;
+        feed(
+            &mut interaction,
+            &mut bounds,
+            (100, 50),
+            &[
+                PointerEvent::Enter { x: 20.0, y: 30.0 },
+                PointerEvent::Button {
+                    button: BUTTON_LEFT,
+                    pressed: true,
+                },
+                // Two motions before the compositor has the moved window: both
+                // are relative to the committed one, so the second replaces the
+                // first instead of adding to it.
+                PointerEvent::Motion { x: 30.0, y: 35.0 },
+                PointerEvent::Motion { x: 45.0, y: 40.0 },
+            ],
+        );
+        assert_eq!((bounds.x, bounds.y), (125, 60));
+        assert!(interaction.moving());
+        feed(
+            &mut interaction,
+            &mut bounds,
+            (125, 60),
+            &[
+                PointerEvent::Button {
+                    button: BUTTON_LEFT,
+                    pressed: false,
+                },
+                PointerEvent::Motion { x: 0.0, y: 0.0 },
+            ],
+        );
+        assert_eq!((bounds.x, bounds.y), (125, 60));
+        assert!(!interaction.moving());
+        assert_eq!((bounds.width, bounds.height), (350, 203));
+    }
+
+    #[test]
+    fn a_right_drag_resizes_and_reports_the_scale_once_it_ends() {
+        let mut interaction = PointerInteraction::default();
+        let mut bounds = BOUNDS;
+        let outcomes = feed(
+            &mut interaction,
+            &mut bounds,
+            (100, 50),
+            &[
+                PointerEvent::Enter { x: 10.0, y: 10.0 },
+                PointerEvent::Button {
+                    button: BUTTON_RIGHT,
+                    pressed: true,
+                },
+                // +40 px on both axes is +40% at 0.5% per pixel per axis.
+                PointerEvent::Motion { x: 50.0, y: 50.0 },
+                PointerEvent::Button {
+                    button: BUTTON_RIGHT,
+                    pressed: false,
+                },
+            ],
+        );
+        assert_eq!((bounds.x, bounds.y), (100, 50), "the origin stays put");
+        assert!(bounds.width > 350 && bounds.height > 203);
+        assert_eq!(outcomes.last().and_then(|o| o.resized_to), Some(140));
+    }
+
+    #[test]
+    fn a_right_click_without_a_drag_changes_nothing() {
+        let mut interaction = PointerInteraction::default();
+        let mut bounds = BOUNDS;
+        let outcomes = feed(
+            &mut interaction,
+            &mut bounds,
+            (100, 50),
+            &[
+                PointerEvent::Enter { x: 10.0, y: 10.0 },
+                PointerEvent::Button {
+                    button: BUTTON_RIGHT,
+                    pressed: true,
+                },
+                PointerEvent::Motion { x: 11.0, y: 11.0 },
+                PointerEvent::Button {
+                    button: BUTTON_RIGHT,
+                    pressed: false,
+                },
+            ],
+        );
+        assert_eq!(bounds, BOUNDS);
+        assert!(
+            outcomes
+                .iter()
+                .all(|outcome| *outcome == PointerOutcome::default())
+        );
+    }
+
+    #[test]
+    fn a_press_without_a_known_pointer_starts_no_drag() {
+        let mut interaction = PointerInteraction::default();
+        let mut bounds = BOUNDS;
+        feed(
+            &mut interaction,
+            &mut bounds,
+            (100, 50),
+            &[
+                PointerEvent::Button {
+                    button: BUTTON_LEFT,
+                    pressed: true,
+                },
+                PointerEvent::Motion { x: 60.0, y: 60.0 },
+            ],
+        );
+        assert!(!interaction.moving());
+        assert_eq!(bounds, BOUNDS);
+    }
+}
