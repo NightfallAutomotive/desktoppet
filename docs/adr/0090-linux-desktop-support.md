@@ -305,8 +305,11 @@ changes.
   a direct 0.14 dependency would duplicate the X11 protocol stack. Blocker
   owner: `longbridge/gpui-kit` (through `gpui-pre-linux`) and `arboard`; lifted
   when both move to 0.14. MIT OR Apache-2.0; no new crate in `Cargo.lock`.
-- **Remaining for L4:** hardware check of the X11 window (transparency, on top,
-  drag, resize), a real X11 session and GNOME, multiple outputs on Wayland,
+- **X11 hardware check (2026-10-23).** The maintainer ran the Development
+  product forced to X11 against XWayland on KDE Plasma and confirmed
+  transparency, staying on top, left-button drag and right-button resize.
+- **Remaining for L4:** a real X11 session and GNOME (not available on the
+  maintainer's Fedora 44 KDE machine), multiple outputs on Wayland,
   hover hide on X11 (it needs the L5 input service to be running), and
   removing the overlay crate's Linux `dead_code` exemption.
 
