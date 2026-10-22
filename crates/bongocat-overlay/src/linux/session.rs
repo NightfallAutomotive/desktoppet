@@ -9,13 +9,15 @@
 //! window, a right-button drag resizes it through the shared [`ResizeDrag`]
 //! state machine, and the shared placement constraint keeps it on its output.
 //!
-//! What Linux cannot do is reported rather than faked. There is no platform
-//! input service until ADR-0090 stage L5, so input starts as
-//! `BackendUnavailable`. A right-click without a drag shows no menu, because the
-//! menu library has no GTK-free context menu (stage L6). Hover hide is not
-//! available on Wayland at all: a client only sees the pointer over a surface
-//! that accepts input, and a hidden pet passes input through, so it could never
-//! notice the pointer leaving.
+//! Keyboard, mouse and motion come from the evdev [`LinuxInputService`], whose
+//! cursor is accumulated inside the window's screen. Idle hide works on both
+//! backends because it only needs the runtime's input sequence.
+//!
+//! What Linux cannot do is reported rather than faked. A right-click without a
+//! drag shows no menu, because the menu library has no GTK-free context menu
+//! (ADR-0090 stage L6). Hover hide is not available on Wayland at all: a client
+//! only sees the pointer over a surface that accepts input, and a hidden pet
+//! passes input through, so it could never notice the pointer leaving.
 
 use super::*;
 
@@ -45,8 +47,11 @@ pub(crate) struct ProductOverlaySession {
     frames_presented: u64,
     dynamic_snapshots: u64,
     model_commit_rejections: u64,
+    input_service: Option<LinuxInputService>,
     input_start_error: Option<PlatformInputError>,
+    input_diagnostics: Option<PlatformInputDiagnostics>,
     input_stopped: bool,
+    idle: IdleHide,
     resize_sender: Option<SyncSender<OverlayResizeOutcome>>,
     pointer: PointerInteraction,
     /// The window origin of the last presented frame. Pointer coordinates are
@@ -68,9 +73,8 @@ impl ProductOverlaySession {
         options: OverlaySessionOptions,
         interaction_sinks: OverlayInteractionSinks,
     ) -> Result<Self, OverlayError> {
-        // Platform input is stage L5. The context menu has no GTK-free
-        // presentation yet (stage L6), so only the resize outcome is wired.
-        let _ = (input_producer, cursor_producer, gamepad_axis_producer);
+        // The context menu has no GTK-free presentation yet (stage L6), so
+        // only the resize outcome is wired.
         let OverlayInteractionSinks {
             context_menu_sender: _,
             resize_sender,
@@ -90,10 +94,28 @@ impl ProductOverlaySession {
             }
         };
         let bounds = window.window.bounds();
+        let viewport =
+            display
+                .screens(&window.window)
+                .first()
+                .map_or(DEFAULT_CURSOR_VIEWPORT, |screen| CursorViewport {
+                    origin: CursorPosition {
+                        x: f64::from(screen.x),
+                        y: f64::from(screen.y),
+                    },
+                    width: f64::from(screen.width),
+                    height: f64::from(screen.height),
+                });
         let diagnostics_producer = runtime_client.platform_input_diagnostics_producer();
-        let (_, input_start_error) =
-            crate::start_platform_input::<()>(&diagnostics_producer, || {
-                Err(PlatformInputError::BackendUnavailable)
+        let (input_service, input_start_error) =
+            crate::start_platform_input(&diagnostics_producer, || {
+                LinuxInputService::start_with_diagnostics(
+                    input_producer,
+                    cursor_producer,
+                    gamepad_axis_producer,
+                    diagnostics_producer.clone(),
+                    viewport,
+                )
             });
         let mut session = Self {
             window: Some(window),
@@ -110,8 +132,11 @@ impl ProductOverlaySession {
             frames_presented: 0,
             dynamic_snapshots: 0,
             model_commit_rejections: 0,
+            input_service,
             input_start_error,
+            input_diagnostics: None,
             input_stopped: false,
+            idle: IdleHide::default(),
             resize_sender,
             pointer: PointerInteraction::default(),
             committed_origin: (bounds.x, bounds.y),
@@ -193,13 +218,17 @@ impl ProductOverlaySession {
         self.apply_presentation()
     }
 
+    /// Apply opacity, pointer routing and stacking. The idle fade multiplies
+    /// the configured opacity, and an idle-hidden pet passes input through so
+    /// an invisible window never swallows a click, as on the other platforms.
     fn apply_presentation(&mut self) -> Result<(), OverlayError> {
-        let alpha = f64::from(self.options.opacity_percent) / 100.0;
+        let alpha = f64::from(self.options.opacity_percent) / 100.0 * self.idle.visible();
+        let click_through = self.options.click_through || self.idle.hidden();
         if let Some(window) = &mut self.window {
             window.window.apply(
                 &self.display,
                 alpha,
-                self.options.click_through,
+                click_through,
                 self.options.always_on_top,
             )?;
         }
@@ -353,6 +382,17 @@ impl ProductOverlaySession {
                 self.apply_bounds()?;
             }
         }
+        let input_running =
+            runtime_snapshot.platform_input.service_status == PlatformInputServiceStatus::Running;
+        self.idle.observe(IdleObservation {
+            enabled: self.options.hide_on_idle && input_running,
+            delay: Duration::from_millis(u64::from(self.options.hide_on_idle_delay_ms)),
+            input_sequence: runtime_snapshot.input.last_input_sequence,
+            cursor_at: runtime_snapshot.cursor.sample.map(|sample| sample.at),
+            gamepad_axis_published: runtime_snapshot.gamepad_axis_transport.published,
+            now: self.session_started.elapsed(),
+        });
+        self.apply_presentation()?;
         self.options.maximum_fps = runtime_snapshot.maximum_fps;
         let overlay_visible = runtime_snapshot.overlay_visible;
         if !overlay_visible {
@@ -484,7 +524,17 @@ impl ProductOverlaySession {
     }
 
     pub(crate) fn stop_input(&mut self) -> Result<(), OverlayError> {
+        if self.input_stopped {
+            return Ok(());
+        }
         self.input_stopped = true;
+        if let Some(service) = self.input_service.take() {
+            self.input_diagnostics = Some(
+                service
+                    .stop()
+                    .map_err(|error| OverlayError::new(error.to_string()))?,
+            );
+        }
         Ok(())
     }
 
@@ -512,7 +562,7 @@ impl ProductOverlaySession {
             dynamic_snapshots: self.dynamic_snapshots,
             model_commit_rejections: self.model_commit_rejections,
             input_start_error: self.input_start_error,
-            input_diagnostics: None,
+            input_diagnostics: self.input_diagnostics,
             render_diagnostics: self.render_consumer.diagnostics(),
             model_generation: self.renderer.model_generation,
             drawable_count: self.renderer.model.drawable_count(),

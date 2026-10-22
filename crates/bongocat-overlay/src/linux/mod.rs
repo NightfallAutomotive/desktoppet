@@ -41,14 +41,18 @@ use crate::{
     cover::{
         COVER_CAPTURE_FRAMES, COVER_CAPTURE_SCALE_PERCENT, COVER_CAPTURE_TIMEOUT, CapturedFrame,
     },
-    default_overlay_window_dimensions, drawable_cull_mode, model_switch_window_bounds,
-    model_window_dimensions,
+    default_overlay_window_dimensions, drawable_cull_mode,
+    idle::{IdleHide, IdleObservation},
+    model_switch_window_bounds, model_window_dimensions,
     placement::{OverlayPlacementConstraint, bounds_inside_screens},
     resize_drag::{ResizeBase, ResizeDrag},
     validate_frame_smoke, validate_model_generation_advance,
 };
+use bongocat_input::{
+    CursorPosition, CursorViewport, PlatformInputDiagnostics, PlatformInputServiceStatus,
+};
 use bongocat_model::CommittedModel;
-use bongocat_platform::PlatformInputError;
+use bongocat_platform::{DEFAULT_CURSOR_VIEWPORT, LinuxInputService, PlatformInputError};
 use bongocat_render::{
     BlendMode, DrawableId, KeyAssetId, KeyOverlay, ModelBounds, ModelCommitErrorCode,
     ModelCommitFeedback, ModelCommitOutcome, ModelCommitToken, RenderConsumer, RenderFrame,

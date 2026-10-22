@@ -93,11 +93,15 @@ pub use windows::{
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod linux_input;
+#[cfg(target_os = "linux")]
 pub use linux::{
     current_display_bounds, display_bounds_for_window, global_window_origin, hide_native_window,
     local_window_origin, request_native_window_close, show_native_window, system_language,
     terminate_after_product_shutdown,
 };
+#[cfg(target_os = "linux")]
+pub use linux_input::{DEFAULT_CURSOR_VIEWPORT, LinuxInputService};
 
 /// Let the user choose the model folder to import.
 ///

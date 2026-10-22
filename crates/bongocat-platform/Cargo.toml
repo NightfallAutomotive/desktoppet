@@ -26,6 +26,7 @@ sys-locale = "=0.3.2"
 auto-launch = "=0.6.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
 rfd = { workspace = true, features = ["xdg-portal"] }
 tray-icon = { workspace = true, features = ["ksni"] }
 

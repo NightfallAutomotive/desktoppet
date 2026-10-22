@@ -313,6 +313,39 @@ changes.
   hover hide on X11 (it needs the L5 input service to be running), and
   removing the overlay crate's Linux `dead_code` exemption.
 
+### L5 progress record (2026-10-23, in progress)
+
+- **Service.** `LinuxInputService` (in `bongocat-platform`) observes every
+  keyboard and mouse node under `/dev/input` from one worker thread, read-only
+  and never grabbed. Startup reports `PermissionDenied` when nodes exist but
+  none can be opened, `BackendUnavailable` when there is no keyboard or mouse,
+  and follows the macOS/Windows start, stop and join contract.
+- **Protocol.** Key and button edges go through the reliable runtime queue; a
+  full queue is counted and recovered with a `QueueOverflow` reset. Every 250 ms,
+  and at once after a `SYN_DROPPED`, the pressed set is re-read with
+  `EVIOCGKEY` and published as a reconciliation, the same cadence as Windows.
+  A removed device resets the input state (`DeviceRemoved`). New devices are
+  picked up every second. evdev codes map to USB HID usages through the
+  inverse of the kernel's HID table, so a key is the same `PhysicalKey` as on
+  the other platforms.
+- **Cursor.** There is no absolute pointer on Wayland, so the followed position
+  is accumulated from relative motion inside the window's screen, seeded at its
+  centre (ADR-0081). `force_move` therefore changes nothing on Linux.
+- **Session.** The overlay starts the service and stops it in the shutdown
+  order; idle hide works on both window backends. Hover hide stays unavailable
+  on Wayland.
+- **Privacy.** Keys leave the worker only as edges to the runtime; diagnostics
+  are counts. The only `unsafe` is two read-only ioctls and `poll`, each with
+  its invariant.
+- **Evidence so far.** Decoder, key map, ioctl encoding and startup outcomes
+  are unit-tested; without `input` group membership the product reports
+  `PermissionDenied` and keeps running.
+- **Remaining for L5:** hardware check with `input` group membership,
+  systemd-logind sleep/lock/session resets, touchpads (absolute motion),
+  gamepads through `gilrs` with its idle-CPU retest, the stress test for zero
+  lost edges, and the issue #47 lifecycle matrix (lock, sleep, VT switch,
+  hot-plug).
+
 ## Consequences
 
 - Linux has a clear scope and order. A compile pass, or one environment
