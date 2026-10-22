@@ -382,16 +382,19 @@ fn an_unobserved_capability_names_no_platform() {
     );
 }
 
-/// `TokenElevation` on Windows and the TCC grant on macOS answer the same
-/// question, so one query and one shape serve both. This pins the shape: a
-/// platform with no capability concept would have to change the contract, not
-/// report a value that reads like one.
+/// `TokenElevation` on Windows, the TCC grant on macOS and evdev access on
+/// Linux answer the same question, so one query and one shape serve all three.
+/// This pins the shape: a platform with no capability concept would have to
+/// change the contract, not report a value that reads like one.
 #[test]
 fn the_running_system_reports_the_capability_it_actually_gates_input_behind() {
     let capability = system_input_capability();
     assert_eq!(capability.name, STARTUP_PERMISSION_CAPABILITY);
     assert!(
-        matches!(capability.name, "input_monitoring" | "administrator"),
+        matches!(
+            capability.name,
+            "input_monitoring" | "administrator" | "input_devices"
+        ),
         "the capability name is a property of the platform, got {}",
         capability.name
     );

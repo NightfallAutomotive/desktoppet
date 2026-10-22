@@ -11,6 +11,7 @@ fn main() {
     match target.as_str() {
         "aarch64-apple-darwin" => link_static_core(vendor.join("lib/macos/arm64")),
         "x86_64-apple-darwin" => link_static_core(vendor.join("lib/macos/x86_64")),
+        "x86_64-unknown-linux-gnu" => link_static_core(vendor.join("lib/linux/x86_64")),
         "x86_64-pc-windows-msvc" => {
             println!(
                 "cargo:rustc-link-search=native={}",

@@ -243,9 +243,9 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ADR-0090 stage L1: the workspace builds, lints and tests on Linux. This is a
-  # build baseline, not Linux product support. The crates that link the Cubism
-  # Core are excluded from the test run until stage L2 vendors the Linux Core.
+  # ADR-0090 stages L1-L2: the workspace builds, lints and tests on Linux,
+  # linking the vendored Linux Cubism Core. This is a build baseline, not Linux
+  # product support.
   linux-workspace:
     name: Test workspace (ubuntu-latest)
     if: needs.filter-paths.outputs.docs-only != 'true'
@@ -279,11 +279,8 @@ jobs:
           cargo clippy --manifest-path Cargo.toml --locked --workspace --all-targets --all-features --exclude bongocat-app -- -D warnings
           cargo clippy --manifest-path Cargo.toml --locked -p bongocat-app --all-targets --features storage-test-injection -- -D warnings
           cargo clippy --manifest-path Cargo.toml --locked -p bongocat-app --all-targets --features production -- -D warnings
-      - name: Run tests that do not link the Cubism Core
-        run: |
-          cargo test --manifest-path Cargo.toml --locked --workspace \
-            --exclude bongocat-app --exclude bongocat-live2d --exclude bongocat-overlay \
-            --exclude bongocat-runtime --exclude bongocat-ui
+      - name: Run tests
+        run: cargo test --manifest-path Cargo.toml --locked --workspace
       - name: Collect redacted failure evidence
         if: ${{ failure() }}
         shell: bash

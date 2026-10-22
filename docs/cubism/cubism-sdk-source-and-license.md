@@ -29,6 +29,15 @@
 | macOS arm64 static library         | `318da4dcfb4ced7221f7ec1487541152dee8c5275059b74156768d66499f0238` |
 | macOS x64 static library           | `288c0cb9ff03242c5ef043f601fa4dbbb6a238ebb8c45c7132bad7d51adb7dfd` |
 | macOS universal dylib              | `d6b029354e47e81c1e063ad2de3cfc63bdd0b7bf3fe8dd079de17c2a4b43b27f` |
+| Linux x64 static library           | `56f20259bd6b552eacce75fbfb623e2678565287c8ccf1f6700678ecf0b044e0` |
+| Linux x64 shared library（未 vendor） | `f741b043ae01a2821824412e3aa498b96564904fbf38cb40a9036f8372f3d77f` |
+
+Linux x64（ADR-0090 L2，2026-10-22）：维护者在官方下载页接受协议后取得同一 ZIP，
+`sha256sum -c` 与 `tools/inspect-cubism-sdk.py --expected-sha256` 均通过，header hash
+与上表一致。仅把 `Core/lib/linux/x86_64/libLive2DCubismCore.a`（164264 bytes，
+`RedistributableFiles.txt` 列出）按原始 bytes 写入 `vendor/cubism/5-r.5/Core/lib/linux/x86_64/`，
+由 `bongocat-live2d/build.rs` 静态链接；`.so` 与 experimental arm64 文件不进入仓库。
+Linux 链接后 `csmGetVersion()` 报告 Core 6.0.1，三个预置模型经 Core 加载的测试通过。
 
 最初验证只把 macOS universal dylib 解压到临时目录；`file`/`lipo` 确认同时包含 arm64
 和 x86_64，动态调用 `csmGetVersion()` 返回 `0x06000001`，
@@ -52,6 +61,8 @@ R5 `Core/README.md` 和 `Core/RedistributableFiles.txt` 给出以下首发相关
 | `aarch64-pc-windows-msvc` | 无 desktop Windows ARM64 artifact；只有 experimental UWP ARM64 DLL                                     | **最终 target 集外**；Windows on ARM 使用 x64 仿真，UWP DLL 不作为产品 Core |
 | `aarch64-apple-darwin`    | `Core/lib/macos/arm64/libLive2DCubismCore.a`；另有 macOS bundle/dylib                                  | 首发候选；先验证 architecture-specific static library            |
 | `x86_64-apple-darwin`     | `Core/lib/macos/x86_64/libLive2DCubismCore.a`；另有 macOS bundle/dylib                                 | 首发候选；需 Intel 实机与发布链验证                              |
+| `x86_64-unknown-linux-gnu` | `Core/lib/linux/x86_64/libLive2DCubismCore.a`；另有 `Core/dll/linux/x86_64/libLive2DCubismCore.so`     | ADR-0090 L2 已 vendor static library；Linux 产品支持待 L8         |
+| `aarch64-unknown-linux-gnu` | 仅 experimental `lib/experimental/linux/arm64` 与 `dll/experimental/linux/arm64`                     | **范围外**（ADR-0090 只支持 x86_64 Linux）                        |
 
 `RedistributableFiles.txt` 列出的 Core 文件才是 Proprietary Software License 下的可再分发候选，并要求按 Live2D 提供的原样形式分发。BongoCat 不修改、重打包为另一种库格式或从二进制反向生成源码。最终选择 static 或 dynamic linkage 之前，还要验证代码签名、notarization、更新替换、崩溃符号和最终安装包中的许可文件。
 

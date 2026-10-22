@@ -200,6 +200,21 @@ changes.
 - **Flatpak note.** Inside a Flatpak sandbox `os-release` describes the
   Flatpak runtime rather than the host distribution.
 
+### L2 implementation record (2026-10-22)
+
+- The maintainer accepted the Live2D agreements on the official download page
+  and downloaded `CubismSdkForNative-5-r.5.zip`; its SHA-256 and the
+  offline inspector both match the pinned baseline.
+- Only `Core/lib/linux/x86_64/libLive2DCubismCore.a` was vendored, byte for
+  byte, and is linked statically like the macOS Core. Hashes are in
+  `docs/cubism/cubism-sdk-source-and-license.md`.
+- `cargo test --locked --workspace` passes on Linux with nothing excluded
+  (1156 tests; the three presets load through the Core). The Linux CI job
+  runs the full suite.
+- Running the Development product on KDE Wayland loads the Core (6.0.1),
+  reports `overlay_unsupported_on_linux` and exits with code 1 through the
+  existing startup-failure path, as L1 intended.
+
 ## Consequences
 
 - Linux has a clear scope and order. A compile pass, or one environment
