@@ -243,9 +243,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  # ADR-0090 stages L1-L2: the workspace builds, lints and tests on Linux,
-  # linking the vendored Linux Cubism Core. This is a build baseline, not Linux
-  # product support.
+  # ADR-0090 stages L1-L3: the workspace builds, lints and tests on Linux,
+  # linking the vendored Linux Cubism Core. Mesa's software Vulkan driver gives
+  # the off-screen renderer test a real adapter on the runner. This is a build
+  # and renderer baseline, not Linux product support.
   linux-workspace:
     name: Test workspace (ubuntu-latest)
     if: needs.filter-paths.outputs.docs-only != 'true'
@@ -263,7 +264,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev \
             libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libvulkan-dev
+            libvulkan-dev mesa-vulkan-drivers
       - name: Cache Cargo artifacts
         uses: actions/cache@v6
         with:

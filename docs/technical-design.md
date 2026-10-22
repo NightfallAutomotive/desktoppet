@@ -1539,7 +1539,7 @@ Linux 按 ADR-0090 分阶段推进，阶段门禁（L1–L8）全部通过前不
 
 - 目标只有 `x86_64-unknown-linux-gnu`；参考环境为 KDE Plasma 6 的 Wayland 与 X11 会话，GNOME Wayland 单独评估并允许显式部分支持。
 - runtime、配置、模型、输入 contract 和 UI 不使用 Linux 类型；Linux cfg 只出现在已有平台分支的 crate：adapter（`bongocat-platform`、`bongocat-overlay`、`bongocat-live2d` bindings、`bongocat-update` target 选择、`bongocat-packaging`）与在其间选择的产品 crate（`bongocat-app`、`bongocat-ui`、`bongocat-config` 存储根、`bongocat-i18n` 平台文案），由 `tools/tests/test_supported_platform_cfg.py` 强制；未实现能力返回强类型 unsupported 状态并经 capability reporting 展示。
-- 主猫 overlay 是独立原生窗口：Wayland 用 `wlr-layer-shell` overlay 层，X11 用 `_NET_WM_STATE_ABOVE` 与 Shape 穿透；GPU backend 由 L3 spike 决定（首选 EGL 上的 OpenGL ES 3.0），只消费 `RenderSnapshot`。
+- 主猫 overlay 是独立原生窗口：Wayland 用 `wlr-layer-shell` overlay 层，X11 用 `_NET_WM_STATE_ABOVE` 与 Shape 穿透；GPU backend 为 `wgpu`（Vulkan，GLES 兜底；ADR-0090 L3），只消费 `RenderSnapshot`。
 - 键鼠在 Wayland 与 X11 统一使用 listen-only evdev（不 `EVIOCGRAB`），`EVIOCGKEY` 校正 pressed set，systemd-logind 的睡眠、锁屏、VT/会话切换触发 Reset；`input` 组权限是显式权限状态。X11 用 XInput2/`XQueryPointer` 取绝对光标，Wayland 以 ADR-0081 的相对位移累积跟随并在诊断中说明限制。
 - 托盘用 StatusNotifierItem，全局快捷键用 `GlobalShortcuts` portal（X11 用键盘 grab），文件选择用 xdg portal，启动项用 XDG autostart，单实例用 `$XDG_RUNTIME_DIR` 下按环境隔离的 Unix socket。
 - 首个产物是由 `bongocat-packaging` 构建的 AppImage，更新 target 为 `linux-x86_64`；不做 Flatpak。

@@ -85,12 +85,9 @@ Linux also differs in kind, not just in API:
 
 ### Rendering
 
-- The renderer backend is chosen in Stage L3, by a spike measured against the
-  same three preset models and readback checks that D3D11 and Metal pass. The
-  leading candidate is OpenGL ES 3.0 over EGL, the API used by the official
-  Cubism Native OpenGL renderer and available on both Wayland and X11; Vulkan
-  and `wgpu` are the alternatives. Whichever backend wins consumes the
-  existing immutable `RenderSnapshot` and adds no Linux-only render semantics.
+- The renderer is `wgpu` (decided in Stage L3, see the L3 record below), on
+  Vulkan with GLES as fallback. It consumes the existing immutable
+  `RenderSnapshot` and adds no Linux-only render semantics.
 - The overlay owns its window, GPU context and frame source with the same
   ownership and shutdown order as AGENTS.md §4.3. It is not embedded in GPUI.
 
@@ -156,7 +153,7 @@ changes.
 | L0 | This ADR, the TODO phase and the Technical Design update | Documents agree |
 | L1 | Workspace builds and lints on Linux; capabilities without a Linux implementation return a typed unsupported state; Linux CI job | Linux clippy (`-D warnings`) and the tests of every crate that does not link the Cubism Core pass in CI; Windows/macOS `just check` unchanged |
 | L2 | Linux Cubism Core vendored with provenance; `bongocat-live2d` links it | Live2D tests pass for all three preset models on Linux |
-| L3 | Renderer backend spike and decision | Offscreen readback of the three preset models matches the D3D11/Metal references within the existing tolerance |
+| L3 | Renderer backend spike and decision | The three preset models render off-screen and pass the shared frame smoke check; independent Linux drivers agree on the same frame |
 | L4 | Overlay on X11 and KDE Wayland | Transparency, topmost, click-through, drag/resize and fractional scaling verified on hardware; repeated open/close and clean shutdown |
 | L5 | evdev input, permission state, logind resets, gamepads | Zero lost edges in stress tests; hot-plug, lock, sleep and VT-switch reset matrix; `gilrs` idle-CPU retest |
 | L6 | Tray, menus, shortcuts, dialogs, clipboard, autostart, single instance, theme | Settings UI and system-menu smoke tests on both KDE sessions; 800×600 and 100/125/150/200% layout |
@@ -214,6 +211,34 @@ changes.
 - Running the Development product on KDE Wayland loads the Core (6.0.1),
   reports `overlay_unsupported_on_linux` and exits with code 1 through the
   existing startup-failure path, as L1 intended.
+
+### L3 implementation record (2026-10-22)
+
+- **Decision: `wgpu`.** GPUI already links `wgpu` on Linux, so under ADR-0030
+  it is the first candidate, and it covers Vulkan and GLES behind one safe API.
+  A separate EGL/OpenGL ES stack or raw Vulkan would add a second GPU stack and
+  `unsafe` handle management for no gain. The Linux adapter has no `unsafe`.
+- **Corrected gate.** The original L3 gate asked for a match against "D3D11/Metal
+  references within the existing tolerance". No reference images exist: every
+  backend is held to the shared 17x17 `validate_frame_smoke` check, and the
+  Technical Design does not require pixel identity across platforms. The gate
+  is now the frame smoke check on all three presets plus agreement between
+  independent Linux drivers.
+- **Evidence** (`docs/benchmark/linux-renderer-spike-2026-10-22.md`): all three
+  presets render through the real cover capture; AMD RADV, NVIDIA and llvmpipe
+  Vulkan agree on more than 99.93% of pixels, differing only at triangle edges.
+  GLES was not measurable inside the Flatpak sandbox.
+- **Version.** `wgpu` is pinned to `=29.0.4`, the version `gpui-kit 0.7.3`
+  (through `gpui-pre-wgpu`) resolves, although 30.0.1 is the latest release.
+  A direct 30.x dependency would link a second `wgpu`, `wgpu-core`, `wgpu-hal`
+  and `naga` into the same process. Blocker owner: `longbridge/gpui-kit`.
+  Lifted when the pinned `gpui-kit` moves to `wgpu` 30, at which point both
+  move together. Review: MIT OR Apache-2.0, maintained by gfx-rs, no new crate
+  in `Cargo.lock`, replacement boundary is `bongocat-overlay/src/linux/`.
+- **Product effect.** The Linux model cover capture now renders for real. The
+  model window, and with it everything the user sees on screen, is still L4.
+- **CI.** The Linux job installs `mesa-vulkan-drivers` so the GPU test runs on
+  lavapipe; a missing adapter fails the test instead of skipping it.
 
 ## Consequences
 

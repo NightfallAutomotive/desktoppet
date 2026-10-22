@@ -908,6 +908,7 @@ dependencies = [
 name = "bongocat-overlay"
 version = "2.3.1"
 dependencies = [
+ "async-io",
  "block2 0.6.2",
  "bongocat-input",
  "bongocat-model",
@@ -923,6 +924,7 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "raw-window-handle",
  "thiserror 2.0.21",
+ "wgpu",
  "windows 0.62.2",
 ]
 

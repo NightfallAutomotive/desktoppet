@@ -46,7 +46,7 @@ use bongocat_input::{
 };
 use bongocat_platform::PlatformInputError;
 use bongocat_render::BlendMode;
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 use bongocat_render::CanvasInfo;
 use bongocat_render::{RenderConsumer, RenderTransportDiagnostics};
 use bongocat_runtime::{

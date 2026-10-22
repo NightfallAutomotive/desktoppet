@@ -11,3 +11,6 @@
 macOS Metal overlay 的第一个单机 draw-time diagnostic baseline 见
 [`macos-overlay-frame-timing-90e0aa7.md`](macos-overlay-frame-timing-90e0aa7.md)
 及其 raw CSV。它只验证当前 preview 的有界计时器，未覆盖发布性能矩阵。
+
+Linux `wgpu` 离屏 renderer 的 ADR-0090 L3 spike（三个预置模型、三种 Vulkan 驱动同帧对比）见
+[`linux-renderer-spike-2026-10-22.md`](linux-renderer-spike-2026-10-22.md)。它是正确性证据，不含帧时间或 CPU 数据。

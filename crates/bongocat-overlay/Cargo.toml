@@ -27,7 +27,9 @@ objc2-foundation = { version = "=0.3.2", default-features = false, features = ["
 objc2-quartz-core = { version = "=0.3.2", default-features = false, features = ["CALayer", "CAMetalLayer", "objc2-core-foundation", "objc2-metal"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+async-io.workspace = true
 image.workspace = true
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "parking_lot", "gles", "vulkan", "wgsl"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 image.workspace = true
