@@ -10,8 +10,10 @@
 
 use super::*;
 
-/// The composited frame. BGRA matches what the other backends read back, so the
-/// shared [`CapturedFrame::from_premultiplied_bgra`] conversion applies as is.
+/// The off-screen composited frame. BGRA matches what the other backends read
+/// back, so the shared [`CapturedFrame::from_premultiplied_bgra`] conversion
+/// applies as is. A window uses whichever of BGRA and RGBA UNORM its surface
+/// offers.
 pub(crate) const COLOR_TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Bgra8Unorm;
 
 pub(crate) const MODEL_TEXTURE_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
@@ -258,7 +260,11 @@ pub(crate) struct Pipelines {
 }
 
 impl Pipelines {
-    pub(crate) fn create(device: &wgpu::Device, layouts: &BindLayouts) -> Self {
+    pub(crate) fn create(
+        device: &wgpu::Device,
+        layouts: &BindLayouts,
+        color_format: wgpu::TextureFormat,
+    ) -> Self {
         let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
             label: Some("bongocat_cubism_shader"),
             source: wgpu::ShaderSource::Wgsl(SHADER_SOURCE.into()),
@@ -279,7 +285,7 @@ impl Pipelines {
                     &layout,
                     &module,
                     "cubism_fragment",
-                    COLOR_TARGET_FORMAT,
+                    color_format,
                     blend,
                     cull,
                 )

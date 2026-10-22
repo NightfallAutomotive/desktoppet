@@ -51,7 +51,7 @@ impl AdapterRequest {
 
 /// Captures the validation and out-of-memory errors of the calls made while it
 /// is alive. Scopes are per thread, which is why the renderer is single-owner.
-struct GpuErrorScope {
+pub(crate) struct GpuErrorScope {
     validation: wgpu::ErrorScopeGuard,
     out_of_memory: wgpu::ErrorScopeGuard,
 }
@@ -67,7 +67,7 @@ impl GpuErrorScope {
     }
 
     /// Pop both scopes, innermost first, and report the first error captured.
-    fn finish(self, what: &str) -> Result<(), OverlayError> {
+    pub(crate) fn finish(self, what: &str) -> Result<(), OverlayError> {
         let validation = async_io::block_on(self.validation.pop());
         let out_of_memory = async_io::block_on(self.out_of_memory.pop());
         match validation.or(out_of_memory) {
@@ -77,20 +77,275 @@ impl GpuErrorScope {
     }
 }
 
-pub(crate) struct OffscreenRenderer {
-    device: wgpu::Device,
-    queue: wgpu::Queue,
-    adapter: RendererAdapter,
+/// The GPU device a renderer runs on, created once per renderer and kept across
+/// window replacements so a hidden-then-shown model window keeps its textures.
+pub(crate) struct GpuContext {
+    pub(crate) instance: wgpu::Instance,
+    pub(crate) adapter: wgpu::Adapter,
+    pub(crate) device: wgpu::Device,
+    pub(crate) queue: wgpu::Queue,
+    info: RendererAdapter,
     uncaptured: Arc<Mutex<Option<String>>>,
+}
+
+impl GpuContext {
+    pub(crate) fn instance(request: AdapterRequest) -> wgpu::Instance {
+        wgpu::Instance::new(wgpu::InstanceDescriptor {
+            backends: request.backends,
+            flags: wgpu::InstanceFlags::default(),
+            backend_options: wgpu::BackendOptions::default(),
+            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
+            display: None,
+        })
+    }
+
+    /// Open a device on `instance`, compatible with `surface` when one is given.
+    pub(crate) fn create(
+        instance: wgpu::Instance,
+        request: AdapterRequest,
+        surface: Option<&wgpu::Surface<'_>>,
+    ) -> Result<Self, OverlayError> {
+        let adapter = async_io::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: request.power_preference,
+            compatible_surface: surface,
+            force_fallback_adapter: request.force_fallback,
+        }))
+        .map_err(|error| OverlayError::new(format!("no wgpu adapter is available: {error}")))?;
+        let info = adapter.get_info();
+        let (device, queue) = async_io::block_on(
+            adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("bongocat_overlay_device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: wgpu::Limits::downlevel_defaults()
+                    .using_resolution(adapter.limits())
+                    .using_alignment(adapter.limits()),
+                memory_hints: wgpu::MemoryHints::MemoryUsage,
+                trace: wgpu::Trace::Off,
+                experimental_features: wgpu::ExperimentalFeatures::disabled(),
+            }),
+        )
+        .map_err(|error| OverlayError::new(format!("create wgpu device: {error}")))?;
+        let uncaptured = Arc::new(Mutex::new(None));
+        let sink = Arc::clone(&uncaptured);
+        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
+            let mut slot = sink
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            slot.get_or_insert_with(|| error.to_string());
+        }));
+        Ok(Self {
+            instance,
+            adapter,
+            device,
+            queue,
+            info: RendererAdapter {
+                backend: format!("{:?}", info.backend),
+                name: info.name,
+                driver: info.driver,
+            },
+            uncaptured,
+        })
+    }
+
+    pub(crate) fn info(&self) -> &RendererAdapter {
+        &self.info
+    }
+
+    fn take_uncaptured_error(&self) -> Result<(), OverlayError> {
+        let error = self
+            .uncaptured
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take();
+        match error {
+            None => Ok(()),
+            Some(error) => Err(OverlayError::new(format!("wgpu device error: {error}"))),
+        }
+    }
+}
+
+/// The model's GPU state and the pipelines that draw it, independent of where
+/// a frame goes: [`OffscreenRenderer`] reads it back, the model window presents
+/// it.
+pub(crate) struct Renderer {
+    pub(crate) context: GpuContext,
+    pub(crate) color_format: wgpu::TextureFormat,
     layouts: BindLayouts,
     pipelines: Pipelines,
     sampler: wgpu::Sampler,
     uniforms: UniformRing,
-    target: RenderTarget,
     pub(crate) model_generation: u64,
     resources: Arc<RenderResources>,
-    model: GpuModel,
-    corner_radius_percent: u8,
+    pub(crate) model: GpuModel,
+    pub(crate) corner_radius_percent: u8,
+    /// The size the mask targets were created for.
+    mask_size: (u32, u32),
+}
+
+impl Renderer {
+    pub(crate) fn create(
+        context: GpuContext,
+        color_format: wgpu::TextureFormat,
+        frame: &RenderFrame,
+        width: u32,
+        height: u32,
+        corner_radius_percent: u8,
+    ) -> Result<Self, OverlayError> {
+        if width == 0 || height == 0 {
+            return Err(OverlayError::new("renderer target has an empty dimension"));
+        }
+        let device = &context.device;
+        let scope = GpuErrorScope::push(device);
+        let layouts = BindLayouts::create(device);
+        let pipelines = Pipelines::create(device, &layouts, color_format);
+        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("bongocat_sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            ..Default::default()
+        });
+        let uniforms = UniformRing::new(device, &layouts);
+        scope.finish("pipeline creation")?;
+        let model = GpuModel::prepare(
+            device,
+            &context.queue,
+            &layouts,
+            &sampler,
+            &frame.resources,
+            &frame.snapshot,
+            width,
+            height,
+        )?;
+        Ok(Self {
+            context,
+            color_format,
+            layouts,
+            pipelines,
+            sampler,
+            uniforms,
+            model_generation: frame.model_generation,
+            resources: Arc::clone(&frame.resources),
+            model,
+            corner_radius_percent,
+            mask_size: (width, height),
+        })
+    }
+
+    /// Apply the newest frame: a new model generation prepares a new GPU model,
+    /// anything else updates the current one in place.
+    pub(crate) fn sync_frame(&mut self, frame: &RenderFrame) -> Result<bool, OverlayError> {
+        if frame.model_generation != self.model_generation {
+            validate_model_generation_advance(self.model_generation, frame.model_generation)?;
+            let prepared = GpuModel::prepare(
+                &self.context.device,
+                &self.context.queue,
+                &self.layouts,
+                &self.sampler,
+                &frame.resources,
+                &frame.snapshot,
+                self.mask_size.0,
+                self.mask_size.1,
+            )?;
+            self.model = prepared;
+            self.resources = Arc::clone(&frame.resources);
+            self.model_generation = frame.model_generation;
+            return Ok(true);
+        }
+        if !Arc::ptr_eq(&self.resources, &frame.resources) {
+            return Err(OverlayError::new(
+                "render resources changed within one model generation",
+            ));
+        }
+        self.model
+            .sync_snapshot(&self.context.queue, &frame.snapshot)?;
+        Ok(false)
+    }
+
+    /// Record one frame into `view`. Mask targets follow the target size, so a
+    /// resized window re-creates them here before anything draws against them.
+    pub(crate) fn encode_frame(
+        &mut self,
+        encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
+        width: u32,
+        height: u32,
+    ) -> Result<(), OverlayError> {
+        self.context.take_uncaptured_error()?;
+        if self.mask_size != (width, height) {
+            self.model
+                .resize_masks(&self.context.device, &self.layouts, width, height);
+            self.mask_size = (width, height);
+        }
+        let scale_offset = model_transform(
+            self.model.bounds,
+            width as f32,
+            height as f32,
+            self.model.mirror_horizontal,
+        );
+        let corner_radius =
+            corner_radius_uniform(self.corner_radius_percent, width as f32, height as f32);
+        let plan = self.model.plan(scale_offset, corner_radius, width, height);
+        let offsets = self.uniforms.upload(
+            &self.context.device,
+            &self.context.queue,
+            &self.layouts,
+            plan.iter().map(|draw| draw.uniforms),
+        );
+        self.encode_mask_passes(encoder, &plan, &offsets)?;
+        self.encode_main_pass(encoder, view, &plan, &offsets)
+    }
+
+    pub(crate) fn error_scope(&self) -> GpuErrorScope {
+        GpuErrorScope::push(&self.context.device)
+    }
+
+    /// Render one frame into a throwaway target and run the frame smoke check
+    /// on it. A window surface cannot be read back portably, so a frame that
+    /// gates a model commit is checked here, at the window's size, before the
+    /// same frame is presented.
+    pub(crate) fn verify_frame(&mut self, width: u32, height: u32) -> Result<(), OverlayError> {
+        let target = RenderTarget::new(&self.context.device, self.color_format, width, height);
+        let bytes = self.render_and_read(&target)?;
+        verify_frame_smoke(&bytes, target.row_pitch() as usize, width, height).map_err(|error| {
+            let info = self.context.info();
+            OverlayError::new(format!(
+                "{error} ({} {}, {})",
+                info.backend, info.name, info.driver
+            ))
+        })
+    }
+
+    fn render_and_read(&mut self, target: &RenderTarget) -> Result<Vec<u8>, OverlayError> {
+        let scope = self.error_scope();
+        let mut encoder =
+            self.context
+                .device
+                .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                    label: Some("bongocat_readback_frame"),
+                });
+        self.encode_frame(&mut encoder, &target.view, target.width, target.height)?;
+        let readback = target.encode_readback(&self.context.device, &mut encoder);
+        let submission = self.context.queue.submit(std::iter::once(encoder.finish()));
+        scope.finish("frame submission")?;
+        let mut bytes = readback.read(&self.context.device, submission)?;
+        if self.color_format == wgpu::TextureFormat::Rgba8Unorm {
+            for pixel in bytes.chunks_exact_mut(4) {
+                pixel.swap(0, 2);
+            }
+        }
+        self.context.take_uncaptured_error()?;
+        Ok(bytes)
+    }
+}
+
+/// A renderer whose frames are read back instead of presented: the model
+/// cover capture and the renderer tests.
+pub(crate) struct OffscreenRenderer {
+    renderer: Renderer,
+    target: RenderTarget,
 }
 
 impl OffscreenRenderer {
@@ -117,124 +372,27 @@ impl OffscreenRenderer {
         height: u32,
         corner_radius_percent: u8,
     ) -> Result<Self, OverlayError> {
-        if width == 0 || height == 0 {
-            return Err(OverlayError::new("renderer target has an empty dimension"));
-        }
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
-            backends: request.backends,
-            flags: wgpu::InstanceFlags::default(),
-            backend_options: wgpu::BackendOptions::default(),
-            memory_budget_thresholds: wgpu::MemoryBudgetThresholds::default(),
-            display: None,
-        });
-        let adapter = async_io::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: request.power_preference,
-            compatible_surface: None,
-            force_fallback_adapter: request.force_fallback,
-        }))
-        .map_err(|error| OverlayError::new(format!("no wgpu adapter is available: {error}")))?;
-        let info = adapter.get_info();
-        let (device, queue) = async_io::block_on(
-            adapter.request_device(&wgpu::DeviceDescriptor {
-                label: Some("bongocat_overlay_device"),
-                required_features: wgpu::Features::empty(),
-                required_limits: wgpu::Limits::downlevel_defaults()
-                    .using_resolution(adapter.limits())
-                    .using_alignment(adapter.limits()),
-                memory_hints: wgpu::MemoryHints::MemoryUsage,
-                trace: wgpu::Trace::Off,
-                experimental_features: wgpu::ExperimentalFeatures::disabled(),
-            }),
-        )
-        .map_err(|error| OverlayError::new(format!("create wgpu device: {error}")))?;
-        let uncaptured = Arc::new(Mutex::new(None));
-        let sink = Arc::clone(&uncaptured);
-        device.on_uncaptured_error(Arc::new(move |error: wgpu::Error| {
-            let mut slot = sink
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            slot.get_or_insert_with(|| error.to_string());
-        }));
-
-        let scope = GpuErrorScope::push(&device);
-        let layouts = BindLayouts::create(&device);
-        let pipelines = Pipelines::create(&device, &layouts);
-        let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("bongocat_sampler"),
-            address_mode_u: wgpu::AddressMode::ClampToEdge,
-            address_mode_v: wgpu::AddressMode::ClampToEdge,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-        let uniforms = UniformRing::new(&device, &layouts);
-        let target = RenderTarget::new(&device, width, height);
-        scope.finish("pipeline creation")?;
-
-        let model = GpuModel::prepare(
-            &device,
-            &queue,
-            &layouts,
-            &sampler,
-            &frame.resources,
-            &frame.snapshot,
+        let context = GpuContext::create(GpuContext::instance(request), request, None)?;
+        let renderer = Renderer::create(
+            context,
+            COLOR_TARGET_FORMAT,
+            frame,
             width,
             height,
-        )?;
-        Ok(Self {
-            device,
-            queue,
-            adapter: RendererAdapter {
-                backend: format!("{:?}", info.backend),
-                name: info.name,
-                driver: info.driver,
-            },
-            uncaptured,
-            layouts,
-            pipelines,
-            sampler,
-            uniforms,
-            target,
-            model_generation: frame.model_generation,
-            resources: Arc::clone(&frame.resources),
-            model,
             corner_radius_percent,
-        })
+        )?;
+        let target =
+            RenderTarget::new(&renderer.context.device, COLOR_TARGET_FORMAT, width, height);
+        Ok(Self { renderer, target })
     }
 
     #[cfg(test)]
     pub(crate) fn adapter(&self) -> &RendererAdapter {
-        &self.adapter
+        self.renderer.context.info()
     }
 
-    /// Apply the newest frame: a new model generation prepares a new GPU model,
-    /// anything else updates the current one in place.
     pub(crate) fn sync_frame(&mut self, frame: &RenderFrame) -> Result<bool, OverlayError> {
-        if frame.model_generation != self.model_generation {
-            validate_model_generation_advance(self.model_generation, frame.model_generation)?;
-            let prepared = GpuModel::prepare(
-                &self.device,
-                &self.queue,
-                &self.layouts,
-                &self.sampler,
-                &frame.resources,
-                &frame.snapshot,
-                self.target.width,
-                self.target.height,
-            )?;
-            self.model = prepared;
-            self.resources = Arc::clone(&frame.resources);
-            self.model_generation = frame.model_generation;
-            return Ok(true);
-        }
-        if !Arc::ptr_eq(&self.resources, &frame.resources) {
-            return Err(OverlayError::new(
-                "render resources changed within one model generation",
-            ));
-        }
-        self.model.sync_snapshot(&self.queue, &frame.snapshot)?;
-        Ok(false)
+        self.renderer.sync_frame(frame)
     }
 
     /// Draw one frame and read it back as straight-alpha RGBA.
@@ -242,51 +400,25 @@ impl OffscreenRenderer {
         &mut self,
         verify_frame: bool,
     ) -> Result<CapturedFrame, OverlayError> {
-        self.take_uncaptured_error()?;
-        let width = self.target.width;
-        let height = self.target.height;
-        let scale_offset = model_transform(
-            self.model.bounds,
-            width as f32,
-            height as f32,
-            self.model.mirror_horizontal,
-        );
-        let corner_radius =
-            corner_radius_uniform(self.corner_radius_percent, width as f32, height as f32);
-        let plan = self.model.plan(scale_offset, corner_radius, width, height);
-        let scope = GpuErrorScope::push(&self.device);
-        let offsets = self.uniforms.upload(
-            &self.device,
-            &self.queue,
-            &self.layouts,
-            plan.iter().map(|draw| draw.uniforms),
-        );
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("bongocat_frame"),
-            });
-        self.encode_mask_passes(&mut encoder, &plan, &offsets)?;
-        self.encode_main_pass(&mut encoder, &plan, &offsets)?;
-        let readback = self.target.encode_readback(&self.device, &mut encoder);
-        let submission = self.queue.submit(std::iter::once(encoder.finish()));
-        scope.finish("frame submission")?;
-        let row_pitch = readback.row_pitch as usize;
-        let bytes = readback.read(&self.device, submission)?;
+        let bytes = self.renderer.render_and_read(&self.target)?;
+        let row_pitch = self.target.row_pitch() as usize;
+        let (width, height) = (self.target.width, self.target.height);
         if verify_frame {
             // Name the adapter: a blank frame on one driver is a driver report,
             // not a model report, and the user's bug report should say which.
             verify_frame_smoke(&bytes, row_pitch, width, height).map_err(|error| {
+                let info = self.renderer.context.info();
                 OverlayError::new(format!(
                     "{error} ({} {}, {})",
-                    self.adapter.backend, self.adapter.name, self.adapter.driver
+                    info.backend, info.name, info.driver
                 ))
             })?;
         }
-        self.take_uncaptured_error()?;
         CapturedFrame::from_premultiplied_bgra(&bytes, row_pitch, width, height)
     }
+}
 
+impl Renderer {
     fn encode_mask_passes(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -332,13 +464,14 @@ impl OffscreenRenderer {
     fn encode_main_pass(
         &self,
         encoder: &mut wgpu::CommandEncoder,
+        view: &wgpu::TextureView,
         plan: &[PlannedDraw],
         offsets: &[u32],
     ) -> Result<(), OverlayError> {
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("bongocat_main_pass"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                view: &self.target.view,
+                view,
                 resolve_target: None,
                 ops: wgpu::Operations {
                     load: wgpu::LoadOp::Clear(wgpu::Color::TRANSPARENT),
@@ -426,18 +559,6 @@ impl OffscreenRenderer {
             self.model.quad_index_buffer.slice(..),
             wgpu::IndexFormat::Uint16,
         );
-    }
-
-    fn take_uncaptured_error(&self) -> Result<(), OverlayError> {
-        let error = self
-            .uncaptured
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .take();
-        match error {
-            None => Ok(()),
-            Some(error) => Err(OverlayError::new(format!("wgpu device error: {error}"))),
-        }
     }
 }
 
@@ -742,6 +863,37 @@ impl GpuModel {
         self.model_opacity = snapshot.model_opacity;
         self.mirror_horizontal = snapshot.mirror_horizontal;
         Ok(())
+    }
+
+    pub(crate) fn drawable_count(&self) -> usize {
+        self.meshes.len()
+    }
+
+    pub(crate) fn masked_drawable_count(&self) -> usize {
+        self.meshes
+            .iter()
+            .filter(|mesh| mesh.mask.is_some())
+            .count()
+    }
+
+    pub(crate) fn texture_count(&self) -> usize {
+        self.textures.len()
+    }
+
+    /// Re-create every mask target at a new target size. Textures and buffers
+    /// are size-independent and stay, so a resize never reloads model assets.
+    pub(crate) fn resize_masks(
+        &mut self,
+        device: &wgpu::Device,
+        layouts: &BindLayouts,
+        width: u32,
+        height: u32,
+    ) {
+        for mesh in &mut self.meshes {
+            if mesh.mask.is_some() {
+                mesh.mask = Some(create_mask_target(device, layouts, width, height));
+            }
+        }
     }
 
     fn mesh(&self, id: DrawableId) -> Result<&Mesh, OverlayError> {
@@ -1080,7 +1232,7 @@ struct RenderTarget {
 }
 
 impl RenderTarget {
-    fn new(device: &wgpu::Device, width: u32, height: u32) -> Self {
+    fn new(device: &wgpu::Device, format: wgpu::TextureFormat, width: u32, height: u32) -> Self {
         let texture = device.create_texture(&wgpu::TextureDescriptor {
             label: Some("frame_target"),
             size: wgpu::Extent3d {
@@ -1091,7 +1243,7 @@ impl RenderTarget {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: COLOR_TARGET_FORMAT,
+            format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
             view_formats: &[],
         });
@@ -1104,12 +1256,16 @@ impl RenderTarget {
         }
     }
 
+    fn row_pitch(&self) -> u32 {
+        (self.width * 4).next_multiple_of(ROW_ALIGNMENT)
+    }
+
     fn encode_readback(
         &self,
         device: &wgpu::Device,
         encoder: &mut wgpu::CommandEncoder,
     ) -> Readback {
-        let row_pitch = (self.width * 4).next_multiple_of(ROW_ALIGNMENT);
+        let row_pitch = self.row_pitch();
         let buffer = device.create_buffer(&wgpu::BufferDescriptor {
             label: Some("frame_readback"),
             size: u64::from(row_pitch) * u64::from(self.height),
@@ -1137,13 +1293,12 @@ impl RenderTarget {
                 depth_or_array_layers: 1,
             },
         );
-        Readback { buffer, row_pitch }
+        Readback { buffer }
     }
 }
 
 struct Readback {
     buffer: wgpu::Buffer,
-    row_pitch: u32,
 }
 
 impl Readback {

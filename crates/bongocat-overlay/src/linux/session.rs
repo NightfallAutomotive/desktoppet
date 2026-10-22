@@ -1,67 +1,450 @@
-//! The product session placeholder until ADR-0090 stage L4.
+//! The overlay session the product drives on Linux.
 //!
-//! Linux has no model window yet, so every product entry point reports
-//! [`UNSUPPORTED`] instead of pretending to run, and the session type is
-//! uninhabited: no caller can hold a Linux session that draws nothing. The
-//! methods exist only so the shared dispatch compiles; each one is an empty
-//! match over a value that cannot exist.
+//! The same protocol as the macOS session: the initial model is committed only
+//! after its first frame is drawn and checked, a model switch keeps the current
+//! model when the new one cannot be prepared, settings apply every tick, and
+//! shutdown releases the window only after input and the runtime have stopped.
+//!
+//! What Linux cannot do yet is reported rather than faked. There is no platform
+//! input service until ADR-0090 stage L5, so input starts as
+//! `BackendUnavailable`; the window is a Wayland layer surface placed relative
+//! to its output; dragging, resizing, hover hide, idle hide and the
+//! keep-inside-screen constraint arrive with the rest of stage L4.
 
 use super::*;
 
-/// The stable detail every Linux product overlay entry point reports.
+/// The stable detail of every Linux entry point that has no implementation yet.
 pub(crate) const UNSUPPORTED: &str = "overlay_unsupported_on_linux";
 
 /// How long a runtime handshake may take. Matches the Windows adapter, whose
 /// cover capture runs the same activate-then-commit sequence.
 pub(crate) const RUNTIME_TIMEOUT: Duration = Duration::from_secs(2);
 
-pub(crate) enum ProductOverlaySession {}
+/// Fields drop in declaration order: the window (and the GPU surface inside it)
+/// first, then the renderer's device, and the Wayland connection last, because
+/// the GPU surface holds raw pointers into it.
+pub(crate) struct ProductOverlaySession {
+    window: Option<ModelWindow>,
+    renderer: Renderer,
+    runtime_client: RuntimeClient,
+    render_consumer: RenderConsumer,
+    options: OverlaySessionOptions,
+    /// The window box, kept while the window is unmapped so it reopens in place.
+    bounds: OverlayWindowBounds,
+    last_frame: RenderFrame,
+    previous_snapshot: Arc<RenderSnapshot>,
+    pending_initial_model_commit: Option<ModelCommitToken>,
+    pending_model_frame: Option<RenderFrame>,
+    retry_backoff: FrameRetryBackoff,
+    frames_presented: u64,
+    dynamic_snapshots: u64,
+    model_commit_rejections: u64,
+    input_start_error: Option<PlatformInputError>,
+    input_stopped: bool,
+    display: WaylandDisplay,
+}
 
 impl ProductOverlaySession {
     pub(crate) fn start(
-        _runtime_client: RuntimeClient,
-        _input_producer: InputProducer,
-        _cursor_producer: CursorProducer,
-        _gamepad_axis_producer: GamepadAxisProducer,
-        _render_consumer: RenderConsumer,
-        _options: OverlaySessionOptions,
-        _interaction_sinks: OverlayInteractionSinks,
+        runtime_client: RuntimeClient,
+        input_producer: InputProducer,
+        cursor_producer: CursorProducer,
+        gamepad_axis_producer: GamepadAxisProducer,
+        render_consumer: RenderConsumer,
+        options: OverlaySessionOptions,
+        interaction_sinks: OverlayInteractionSinks,
     ) -> Result<Self, OverlayError> {
-        Err(OverlayError::new(UNSUPPORTED))
+        // Input, pointer interaction and the context menu need the seat, which
+        // is the next step of stage L4 (pointer) and stage L5 (input).
+        let _ = (
+            input_producer,
+            cursor_producer,
+            gamepad_axis_producer,
+            interaction_sinks,
+        );
+        let initial_frame = render_consumer
+            .take_latest()
+            .ok_or_else(|| OverlayError::new("runtime did not publish an initial render frame"))?;
+        let token = initial_frame
+            .model_commit
+            .ok_or_else(|| OverlayError::new("initial render frame has no model commit token"))?;
+        let opened = Self::open(&initial_frame, options);
+        let (display, window, renderer) = match opened {
+            Ok(opened) => opened,
+            Err(error) => {
+                reject_model_commit(&runtime_client, &render_consumer, token)?;
+                return Err(error);
+            }
+        };
+        let bounds = window.window.bounds();
+        let diagnostics_producer = runtime_client.platform_input_diagnostics_producer();
+        let (_, input_start_error) =
+            crate::start_platform_input::<()>(&diagnostics_producer, || {
+                Err(PlatformInputError::BackendUnavailable)
+            });
+        let mut session = Self {
+            window: Some(window),
+            renderer,
+            runtime_client,
+            render_consumer,
+            options,
+            bounds,
+            previous_snapshot: Arc::clone(&initial_frame.snapshot),
+            last_frame: initial_frame,
+            pending_initial_model_commit: None,
+            pending_model_frame: None,
+            retry_backoff: FrameRetryBackoff::default(),
+            frames_presented: 0,
+            dynamic_snapshots: 0,
+            model_commit_rejections: 0,
+            input_start_error,
+            input_stopped: false,
+            display,
+        };
+        session.apply_presentation();
+        if session.runtime_client.snapshot().overlay_visible {
+            match session.present(true) {
+                Ok(()) => {}
+                Err(error) if error.is_temporary_presentation_unavailable() => {
+                    session.pending_initial_model_commit = Some(token);
+                    let _ = session.retry_backoff.register_temporary_failure();
+                }
+                Err(error) => {
+                    reject_model_commit(&session.runtime_client, &session.render_consumer, token)?;
+                    return Err(error);
+                }
+            }
+        } else {
+            session.window = None;
+        }
+        if session.pending_initial_model_commit.is_none() {
+            report_model_commit(
+                &session.runtime_client,
+                &session.render_consumer,
+                token,
+                ModelCommitOutcome::Prepared,
+            )?;
+        }
+        Ok(session)
+    }
+
+    /// Connect, open the first window, then open a device compatible with it.
+    fn open(
+        frame: &RenderFrame,
+        options: OverlaySessionOptions,
+    ) -> Result<(WaylandDisplay, ModelWindow, Renderer), OverlayError> {
+        let mut display = WaylandDisplay::connect()?;
+        let default_size = model_window_dimensions(frame.snapshot.canvas, options.scale_percent);
+        let instance = GpuContext::instance(AdapterRequest::PRODUCT);
+        let (layer, surface) = open_window(
+            &mut display,
+            &instance,
+            options.window_bounds,
+            default_size,
+            options,
+        )?;
+        let context = GpuContext::create(instance, AdapterRequest::PRODUCT, Some(&surface))?;
+        let format = window_color_format(&surface, &context.adapter)?;
+        let (width, height) = layer.buffer_size(&display);
+        let renderer = Renderer::create(
+            context,
+            format,
+            frame,
+            width,
+            height,
+            options.corner_radius_percent,
+        )?;
+        let window = ModelWindow::new(layer, surface, &renderer, &display)?;
+        Ok((display, window, renderer))
+    }
+
+    /// Re-open the window after it was hidden, at the box it had.
+    fn reopen(&mut self) -> Result<(), OverlayError> {
+        let (layer, surface) = open_window(
+            &mut self.display,
+            &self.renderer.context.instance,
+            Some(self.bounds),
+            (self.bounds.width, self.bounds.height),
+            self.options,
+        )?;
+        let window = ModelWindow::new(layer, surface, &self.renderer, &self.display)?;
+        self.window = Some(window);
+        self.apply_presentation();
+        Ok(())
+    }
+
+    fn apply_presentation(&mut self) {
+        let alpha = f64::from(self.options.opacity_percent) / 100.0;
+        let click_through = self.options.click_through;
+        let always_on_top = self.options.always_on_top;
+        if let Some(window) = &mut self.window {
+            window.window.set_opacity(alpha);
+            window
+                .window
+                .set_click_through(&self.display, click_through);
+            window.window.set_always_on_top(always_on_top);
+        }
+    }
+
+    fn present(&mut self, verify: bool) -> Result<(), OverlayError> {
+        if self.window.is_none() {
+            self.reopen()?;
+        }
+        let window = self
+            .window
+            .as_mut()
+            .expect("the model window was just opened");
+        window.present(&mut self.renderer, &self.display, verify)?;
+        self.retry_backoff.record_success();
+        self.frames_presented = self.frames_presented.saturating_add(1);
+        Ok(())
+    }
+
+    fn defer_drawable_unavailable(&mut self) -> OverlayTickOutcome {
+        OverlayTickOutcome::Deferred(self.retry_backoff.register_temporary_failure())
     }
 
     pub(crate) fn window_handle(&self) -> Result<WindowHandle<'_>, HandleError> {
-        match *self {}
+        let window = self.window.as_ref().ok_or(HandleError::Unavailable)?;
+        let (_, raw) = self
+            .display
+            .raw_handles(&window.window)
+            .map_err(|_| HandleError::Unavailable)?;
+        // SAFETY: the `wl_surface` behind `raw` belongs to `window`, which the
+        // returned borrow of `self` keeps alive.
+        Ok(unsafe { WindowHandle::borrow_raw(raw) })
     }
 
-    pub(crate) fn run_for(&mut self, _duration: Duration) -> Result<(), OverlayError> {
-        match *self {}
+    pub(crate) fn run_for(&mut self, duration: Duration) -> Result<(), OverlayError> {
+        let started = Instant::now();
+        let mut next_frame = started;
+        while duration.is_zero() || started.elapsed() < duration {
+            let outcome = self.tick()?;
+            if outcome == OverlayTickOutcome::Hidden {
+                break;
+            }
+            let interval = outcome.retry_after().unwrap_or_else(|| {
+                frame_interval_for_maximum_fps(self.options.maximum_fps)
+                    .expect("product overlay stores a validated maximum FPS")
+            });
+            if outcome.retry_after().is_some() {
+                next_frame = Instant::now();
+            }
+            next_frame += interval;
+            if let Some(delay) = next_frame.checked_duration_since(Instant::now()) {
+                std::thread::sleep(delay);
+            } else {
+                next_frame = Instant::now();
+            }
+        }
+        Ok(())
     }
 
     pub(crate) fn tick(&mut self) -> Result<OverlayTickOutcome, OverlayError> {
-        match *self {}
+        self.display.dispatch()?;
+        let runtime_snapshot = self.runtime_client.snapshot();
+        if runtime_snapshot.state == RuntimeState::Stopped {
+            return Err(OverlayError::new(
+                "runtime stopped while the product overlay was active",
+            ));
+        }
+        let next_options = self
+            .options
+            .with_runtime_settings(runtime_snapshot.overlay_settings);
+        if next_options != self.options {
+            if next_options.scale_percent != self.options.scale_percent {
+                self.bounds = self
+                    .bounds
+                    .rescale(self.options.scale_percent, next_options.scale_percent);
+                if let Some(window) = &mut self.window {
+                    window.window.set_bounds(self.bounds);
+                }
+            }
+            self.renderer.corner_radius_percent = next_options.corner_radius_percent;
+            self.options = next_options;
+            self.apply_presentation();
+        }
+        self.options.maximum_fps = runtime_snapshot.maximum_fps;
+        let overlay_visible = runtime_snapshot.overlay_visible;
+        if !overlay_visible {
+            // Unmapping a layer surface means destroying it; it reopens at the
+            // same box when the overlay is shown again.
+            self.window = None;
+        }
+
+        if let Some(token) = self.pending_initial_model_commit {
+            match self.present(true) {
+                Ok(()) => {
+                    report_model_commit(
+                        &self.runtime_client,
+                        &self.render_consumer,
+                        token,
+                        ModelCommitOutcome::Prepared,
+                    )?;
+                    self.pending_initial_model_commit = None;
+                    return Ok(OverlayTickOutcome::Presented);
+                }
+                Err(error) if error.is_temporary_presentation_unavailable() => {
+                    return Ok(self.defer_drawable_unavailable());
+                }
+                Err(error) => {
+                    reject_model_commit(&self.runtime_client, &self.render_consumer, token)?;
+                    return Err(error);
+                }
+            }
+        }
+
+        let next_frame = self.pending_model_frame.take().or_else(|| {
+            if overlay_visible {
+                self.render_consumer.take_latest()
+            } else {
+                self.render_consumer.take_model_commit()
+            }
+        });
+        if let Some(frame) = next_frame {
+            let model_changed = frame.model_generation != self.renderer.model_generation;
+            let previous_bounds = self.bounds;
+            match self.renderer.sync_frame(&frame) {
+                Ok(_) => {
+                    if model_changed {
+                        // The window keeps its width and takes the new canvas's
+                        // aspect ratio, exactly like a macOS model switch.
+                        self.bounds =
+                            model_switch_window_bounds(self.bounds, frame.snapshot.canvas);
+                        if let Some(window) = &mut self.window {
+                            window.window.set_bounds(self.bounds);
+                        }
+                        if overlay_visible {
+                            match self.present(true) {
+                                Ok(()) => {}
+                                Err(error) if error.is_temporary_presentation_unavailable() => {
+                                    self.pending_model_frame = Some(frame);
+                                    return Ok(self.defer_drawable_unavailable());
+                                }
+                                Err(error) => {
+                                    self.bounds = previous_bounds;
+                                    if let Some(token) = frame.model_commit {
+                                        reject_model_commit(
+                                            &self.runtime_client,
+                                            &self.render_consumer,
+                                            token,
+                                        )?;
+                                        self.model_commit_rejections =
+                                            self.model_commit_rejections.saturating_add(1);
+                                    }
+                                    return Err(error);
+                                }
+                            }
+                        }
+                    }
+                    if let Some(token) = frame.model_commit {
+                        report_model_commit(
+                            &self.runtime_client,
+                            &self.render_consumer,
+                            token,
+                            ModelCommitOutcome::Prepared,
+                        )?;
+                    }
+                    if frame.snapshot.as_ref() != self.previous_snapshot.as_ref() {
+                        self.dynamic_snapshots = self.dynamic_snapshots.saturating_add(1);
+                    }
+                    self.previous_snapshot = Arc::clone(&frame.snapshot);
+                    self.last_frame = frame;
+                    if model_changed {
+                        return Ok(if overlay_visible {
+                            OverlayTickOutcome::Presented
+                        } else {
+                            OverlayTickOutcome::Hidden
+                        });
+                    }
+                }
+                // A model that cannot be prepared is rejected and the current
+                // one keeps drawing: `sync_frame` replaces nothing on failure.
+                Err(error) if frame.model_commit.is_some() => {
+                    reject_model_commit(
+                        &self.runtime_client,
+                        &self.render_consumer,
+                        frame.model_commit.expect("checked model commit token"),
+                    )?;
+                    self.model_commit_rejections = self.model_commit_rejections.saturating_add(1);
+                    let _ = error;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if !overlay_visible {
+            return Ok(OverlayTickOutcome::Hidden);
+        }
+        match self.present(self.frames_presented == 0) {
+            Ok(()) => Ok(OverlayTickOutcome::Presented),
+            Err(error) if error.is_temporary_presentation_unavailable() => {
+                Ok(self.defer_drawable_unavailable())
+            }
+            Err(error) => Err(error),
+        }
     }
 
     pub(crate) fn window_bounds(&self) -> Result<OverlayWindowBounds, OverlayError> {
-        match *self {}
+        self.bounds.validate()
     }
 
     pub(crate) fn is_visible(&self) -> bool {
-        match *self {}
+        self.window.is_some() && self.frames_presented > 0
     }
 
     pub(crate) fn model_generation(&self) -> u64 {
-        match *self {}
+        self.renderer.model_generation
     }
 
     pub(crate) fn stop_input(&mut self) -> Result<(), OverlayError> {
-        match *self {}
+        self.input_stopped = true;
+        Ok(())
     }
 
     pub(crate) fn finish_after_runtime_shutdown(
-        self,
+        mut self,
     ) -> Result<ProductOverlayReport, OverlayError> {
-        match self {}
+        if !self.input_stopped {
+            return Err(OverlayError::new(
+                "platform input must stop before the runtime",
+            ));
+        }
+        if self.runtime_client.snapshot().state != RuntimeState::Stopped {
+            return Err(OverlayError::new(
+                "runtime must stop before releasing the product overlay",
+            ));
+        }
+        while self.render_consumer.take_latest().is_some() {}
+        let placement_fully_visible = !self.options.keep_inside_screen
+            || self.window.as_ref().is_none_or(|window| {
+                let output = window.window.output_bounds();
+                bounds_inside_screens(
+                    &[OverlayScreenBounds {
+                        x: output.x,
+                        y: output.y,
+                        width: output.width,
+                        height: output.height,
+                    }],
+                    self.bounds,
+                )
+            });
+        let report = ProductOverlayReport {
+            frames_presented: self.frames_presented,
+            placement_fully_visible,
+            dynamic_snapshots: self.dynamic_snapshots,
+            model_commit_rejections: self.model_commit_rejections,
+            input_start_error: self.input_start_error,
+            input_diagnostics: None,
+            render_diagnostics: self.render_consumer.diagnostics(),
+            model_generation: self.renderer.model_generation,
+            drawable_count: self.renderer.model.drawable_count(),
+            masked_drawable_count: self.renderer.model.masked_drawable_count(),
+            texture_count: self.renderer.model.texture_count(),
+        };
+        // Release the window before the device, explicitly, so the order does
+        // not depend on the struct layout alone.
+        self.window = None;
+        Ok(report)
     }
 }
 

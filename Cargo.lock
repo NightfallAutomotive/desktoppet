@@ -924,6 +924,10 @@ dependencies = [
  "objc2-quartz-core 0.3.2",
  "raw-window-handle",
  "thiserror 2.0.21",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-wlr",
  "wgpu",
  "windows 0.62.2",
 ]

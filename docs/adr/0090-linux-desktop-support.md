@@ -240,6 +240,38 @@ changes.
 - **CI.** The Linux job installs `mesa-vulkan-drivers` so the GPU test runs on
   lavapipe; a missing adapter fails the test instead of skipping it.
 
+### L4 progress record (2026-10-22, in progress)
+
+- **Wayland window.** The model window is a `wlr-layer-shell` surface on the
+  adapter's own Wayland connection (not GPUI's). It is placed with margins from
+  the output's top-left, so `OverlayWindowBounds::x`/`y` are output-relative on
+  Wayland; the output size is learned from a configure of a fully anchored,
+  zero-sized surface. Always-on-top maps to the `overlay` layer, otherwise
+  `bottom`: a layer surface cannot join the normal window stack in between.
+- **Presentation.** `wgpu` presents with premultiplied (or inherited) alpha and
+  Mailbox/Immediate rather than FIFO, so the self-paced frame loop never waits
+  on a frame callback of an unshown surface. Fractional scale uses
+  `wp_fractional_scale_v1` with `wp_viewporter`; window opacity uses
+  `wp_alpha_modifier_v1`, applied once to the whole surface. Click-through is
+  an empty input region. Hiding destroys the layer surface; showing reopens it
+  at the same box on the same device.
+- **Session.** The Linux `ProductOverlaySession` follows the macOS protocol:
+  the first frame gates the initial commit, a model that cannot be prepared is
+  rejected while the current one keeps drawing, and shutdown releases the
+  window only after input and the runtime have stopped. Platform input starts
+  as `BackendUnavailable` until L5. The app's frame loop runs the shared
+  macOS/Linux branch.
+- **Evidence.** On KDE Plasma Wayland (AMD Radeon 740M, Vulkan) the ignored
+  `product_window_smoke` test presents 301 frames in 5 s at 350x203, and the
+  Development product runs and exits cleanly with `--run-seconds`. New direct
+  dependencies (`wayland-client`, `wayland-backend` with `client_system`,
+  `wayland-protocols`, `wayland-protocols-wlr`) were already in the graph
+  through GPUI at their latest releases, MIT; no new crate enters the lockfile.
+- **Remaining for L4:** pointer interaction (drag, context menu, right-button
+  resize), hover hide, the keep-inside-screen constraint, multiple outputs, the
+  X11 backend, the hardware visual checklist, and removing the overlay crate's
+  Linux `dead_code` exemption.
+
 ## Consequences
 
 - Linux has a clear scope and order. A compile pass, or one environment

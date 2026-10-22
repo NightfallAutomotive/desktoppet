@@ -5,10 +5,6 @@
     windows_subsystem = "windows"
 )]
 #![forbid(unsafe_code)]
-// Linux stops at the overlay start until ADR-0090 stage L4, so the frame-loop
-// helpers only the running overlay uses have no caller there yet. Remove this
-// exemption when the Linux overlay session lands.
-#![cfg_attr(target_os = "linux", allow(dead_code, unused_variables))]
 
 //! The product entry point: start every subsystem, hand the windows to GPUI and
 //! own the run loop.
@@ -1172,7 +1168,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
                 let context_menu_requested = context_menu_receiver.try_recv().is_ok();
                 let resize_outcome = resize_receiver.try_recv().ok();
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 let (keep_running, next_retry_delay) = cx.update(|cx| {
                     if !cx.has_global::<ProductCoordinator>() {
                         return (false, None);
@@ -1262,23 +1258,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     (keep_running, next_retry_delay)
                 });
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 {
                     retry_delay = next_retry_delay;
                 }
-                // Linux never reaches a running frame source: the overlay session
-                // reports `overlay_unsupported_on_linux` and startup quits before
-                // this loop. The real Linux frame loop is ADR-0090 stage L4.
-                #[cfg(target_os = "linux")]
-                let keep_running = {
-                    let _ = (
-                        context_menu_requested,
-                        resize_outcome,
-                        &mut last_overlay_bounds,
-                        &mut retry_delay,
-                    );
-                    false
-                };
                 #[cfg(target_os = "windows")]
                 let (tick_result, system_termination_requested) = if frame_active {
                     let mut overlay = frame_overlay.borrow_mut();
@@ -2576,7 +2559,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let quit_shutdown_requested = Arc::clone(&shutdown_requested);
             cx.spawn(async move |_cx| {
                 Timer::after(run_options.run_duration()).await;
-                #[cfg(target_os = "macos")]
+                #[cfg(any(target_os = "macos", target_os = "linux"))]
                 _cx.update(request_product_quit);
                 #[cfg(target_os = "windows")]
                 request_windows_product_quit(&quit_shutdown_requested);

@@ -263,6 +263,13 @@ pub(crate) fn request_update_check(cx: &mut App) -> bool {
 }
 
 /// Whether the update window asked for the process to be replaced.
+#[cfg_attr(
+    target_os = "linux",
+    expect(
+        dead_code,
+        reason = "Linux has no release to update to until ADR-0090 stage L7"
+    )
+)]
 pub(crate) fn take_update_restart_request(cx: &mut App) -> bool {
     cx.try_global::<ProductCoordinator>()
         .and_then(|coordinator| coordinator.update_service.as_ref())

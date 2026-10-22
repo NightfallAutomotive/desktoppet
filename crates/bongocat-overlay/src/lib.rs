@@ -5,11 +5,11 @@
 //! a frame of it contained, and when it is really visible. The modules below are
 //! those questions; the platform sessions beside them own the two implementations.
 
-// Linux has no model window until ADR-0090 stage L4, so the shared session logic
-// (placement, hover and idle hide, resize drag, presentation) has no caller there
-// yet. Remove this exemption when the Linux session lands.
+// The Linux session does not use the pointer-driven shared logic yet: resize drag,
+// the placement constraint and hover hide arrive with the pointer work of
+// ADR-0090 stage L4, and idle hide needs the stage L5 input service. Remove this
+// exemption when those land.
 #![cfg_attr(target_os = "linux", allow(dead_code, unused_imports))]
-
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "macos")]

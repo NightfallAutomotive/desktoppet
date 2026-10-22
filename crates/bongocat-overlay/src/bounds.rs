@@ -15,7 +15,7 @@ use super::*;
 /// right-button drag (and it can be a persisted/manual geometry). The shared
 /// cover rounding keeps the model fully inside the native window and makes a
 /// switch back to a model reproduce its startup dimensions.
-#[cfg(any(target_os = "macos", test))]
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
 pub(crate) fn model_switch_window_bounds(
     current: OverlayWindowBounds,
     canvas: CanvasInfo,
@@ -212,7 +212,7 @@ impl OverlayWindowBounds {
         Ok(self)
     }
 
-    #[cfg(any(target_os = "macos", test))]
+    #[cfg(any(target_os = "macos", target_os = "linux", test))]
     pub(crate) fn rescale(self, previous_percent: u16, next_percent: u16) -> Self {
         let ratio = f64::from(next_percent) / f64::from(previous_percent);
         Self {

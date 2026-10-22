@@ -247,3 +247,46 @@ fn backend_evidence() {
         release_first_frame(runtime, &consumer, &frame);
     }
 }
+
+/// The real model window on the running Wayland session, for a few seconds.
+///
+/// Run with `cargo test -p bongocat-overlay --lib product_window_smoke -- --ignored --nocapture`
+/// on a compositor with `wlr-layer-shell` (KDE Plasma, wlroots). The cat is
+/// shown on screen, so this never runs in CI.
+#[test]
+#[ignore = "shows a window on the running Wayland session"]
+fn product_window_smoke() {
+    let (runtime, consumer) = RuntimeOwner::start_with_rendering(true, 64);
+    let client = runtime.client();
+    client
+        .wait_for_revision(1, RUNTIME_TIMEOUT)
+        .expect("runtime ready");
+    let activation = client
+        .send(RuntimeCommand::ActivateModel(preset("standard")))
+        .expect("activate");
+    client
+        .wait_for_model_preparation(activation, RUNTIME_TIMEOUT)
+        .expect("prepared");
+    eprintln!("model prepared; starting the session");
+    let mut session = ProductOverlaySession::start(
+        client.clone(),
+        client.input_producer(),
+        client.cursor_producer(),
+        client.gamepad_axis_producer(),
+        consumer,
+        OverlaySessionOptions::default(),
+        OverlayInteractionSinks {
+            context_menu_sender: None,
+            resize_sender: None,
+        },
+    )
+    .expect("session start");
+    eprintln!("session started at {:?}; running", session.window_bounds());
+    session.run_for(Duration::from_secs(5)).expect("run");
+    eprintln!("ran; visible = {}", session.is_visible());
+    session.stop_input().expect("stop input");
+    runtime.shutdown(RUNTIME_TIMEOUT).expect("runtime shutdown");
+    let report = session.finish_after_runtime_shutdown().expect("finish");
+    eprintln!("report: {report:?}");
+    assert!(report.frames_presented > 1, "the window presented frames");
+}
