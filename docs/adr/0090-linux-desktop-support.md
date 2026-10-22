@@ -340,8 +340,14 @@ changes.
 - **Evidence so far.** Decoder, key map, ioctl encoding and startup outcomes
   are unit-tested; without `input` group membership the product reports
   `PermissionDenied` and keeps running.
-- **Remaining for L5:** hardware check with `input` group membership,
-  systemd-logind sleep/lock/session resets, touchpads (absolute motion),
+- **Hardware check (2026-10-23).** With the maintainer's account in the `input`
+  group (Bazzite keeps the group in `/usr/lib/group`, so it was copied to
+  `/etc/group` before `usermod`), the session smoke test started the service on
+  the real devices, reconciled 16 times in 5 s and stopped cleanly, and the
+  maintainer confirmed the paws react to typing and clicks and the cat follows
+  the mouse. A session that predates the membership needs a fresh login (or
+  `sg input`).
+- **Remaining for L5:** systemd-logind sleep/lock/session resets, touchpads (absolute motion),
   gamepads through `gilrs` with its idle-CPU retest, the stress test for zero
   lost edges, and the issue #47 lifecycle matrix (lock, sleep, VT switch,
   hot-plug).
