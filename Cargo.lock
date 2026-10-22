@@ -960,6 +960,7 @@ dependencies = [
  "bongocat-input",
  "bongocat-runtime",
  "dispatch2",
+ "futures-lite",
  "gilrs",
  "global-hotkey",
  "image",
@@ -980,6 +981,7 @@ dependencies = [
  "tray-icon",
  "url",
  "windows 0.62.2",
+ "zbus",
 ]
 
 [[package]]

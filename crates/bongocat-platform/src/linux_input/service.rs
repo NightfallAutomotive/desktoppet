@@ -15,13 +15,13 @@
 //!
 //! Wayland has no global cursor position, so the position the model follows is
 //! accumulated from relative motion inside a viewport the overlay supplies
-//! (ADR-0081, ADR-0090). Sleep and session-lock resets through systemd-logind
-//! are a later step of ADR-0090 stage L5; until then the reconciliation is what
-//! clears keys released while the session was away.
+//! (ADR-0081, ADR-0090). Sleep, screen lock and VT or user switches reset the
+//! input state through systemd-logind ([`SessionWatch`]).
 
 use super::{
     decoder::{Decoded, Decoder, RawEvent, control_for},
     device::{InputDevice, OpenError, poll_readable},
+    session_watch::SessionWatch,
 };
 use crate::PlatformInputError;
 use bongocat_input::{
@@ -270,6 +270,7 @@ impl Worker {
         self.publish_diagnostics();
         let _ = startup.send(Ok(()));
 
+        let session_watch = SessionWatch::start();
         let mut last_reconcile = Instant::now();
         let mut last_scan = Instant::now();
         let mut events = Vec::<RawEvent>::new();
@@ -333,6 +334,11 @@ impl Worker {
                 // Whatever the removed device held down can never be released
                 // by it, so the whole pressed state starts over.
                 if let Published::RuntimeStopped = self.reset(InputResetReason::DeviceRemoved) {
+                    return Ok(self.stopped());
+                }
+            }
+            for reason in session_watch.take_resets() {
+                if let Published::RuntimeStopped = self.reset(reason) {
                     return Ok(self.stopped());
                 }
             }

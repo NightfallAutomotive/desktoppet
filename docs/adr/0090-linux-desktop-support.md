@@ -347,7 +347,19 @@ changes.
   maintainer confirmed the paws react to typing and clicks and the cat follows
   the mouse. A session that predates the membership needs a fresh login (or
   `sg input`).
-- **Remaining for L5:** systemd-logind sleep/lock/session resets, touchpads (absolute motion),
+- **logind resets.** A watcher thread subscribes to `Manager.PrepareForSleep`
+  and to the caller's session `Lock`, `Unlock` and `Active` changes, and each
+  becomes a reset on the input worker (`Sleep` or `SessionLock`). The session
+  is found through `session/auto` (a PID lookup fails inside a Flatpak), but
+  signals come from the session's own path, so the watcher reads `Id` through
+  the alias and resolves the real path with `Manager.GetSession`. The `Active`
+  stream's initial value is not a change and is ignored. Without logind the
+  watcher ends quietly and reconciliation remains the safety net. `zbus` is
+  pinned to `=5.19.0`, the version GPUI, `ashpd` and `ksni` resolve, although
+  6.0.0 is the latest; a direct 6.x dependency would duplicate the D-Bus stack.
+  Blocker owners: `longbridge/gpui-kit` (through `accesskit_unix`), `ashpd`,
+  `ksni`. MIT; no new crate in `Cargo.lock`.
+- **Remaining for L5:** touchpads (absolute motion),
   gamepads through `gilrs` with its idle-CPU retest, the stress test for zero
   lost edges, and the issue #47 lifecycle matrix (lock, sleep, VT switch,
   hot-plug).

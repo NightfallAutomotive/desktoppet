@@ -11,5 +11,6 @@ mod decoder;
 mod device;
 mod keymap;
 mod service;
+mod session_watch;
 
 pub use service::{DEFAULT_CURSOR_VIEWPORT, LinuxInputService};
