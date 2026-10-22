@@ -114,7 +114,7 @@ pub(crate) struct WaylandState {
 
 /// The longest pointer backlog kept between two ticks. A stalled frame loop
 /// must not grow it without bound; the oldest motions are the ones dropped.
-const MAXIMUM_POINTER_EVENTS: usize = 1024;
+pub(crate) const MAXIMUM_POINTER_EVENTS: usize = 1024;
 
 struct Globals {
     compositor: WlCompositor,

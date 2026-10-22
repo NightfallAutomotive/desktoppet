@@ -11,6 +11,7 @@
 //! and lending that surface as a `raw-window-handle`, each with its invariant
 //! written beside it.
 
+mod backend;
 mod cover_capture;
 mod pipelines;
 mod pointer;
@@ -20,7 +21,9 @@ mod session;
 mod tests;
 mod wayland;
 mod window;
+mod x11;
 
+pub(crate) use backend::*;
 pub(crate) use cover_capture::*;
 pub(crate) use pipelines::*;
 pub(crate) use pointer::*;
@@ -28,6 +31,7 @@ pub(crate) use renderer::*;
 pub(crate) use session::*;
 pub(crate) use wayland::*;
 pub(crate) use window::*;
+pub(crate) use x11::*;
 
 use crate::{
     BlendFactor, DrawableCullMode, FRAME_SMOKE_GRID_DIMENSION, FrameRetryBackoff, OverlayError,
@@ -58,7 +62,7 @@ use bongocat_runtime::{
 use image::ImageReader;
 use raw_window_handle::{
     HandleError, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
-    WindowHandle,
+    WindowHandle, XcbDisplayHandle, XcbWindowHandle,
 };
 use std::{
     collections::BTreeMap,

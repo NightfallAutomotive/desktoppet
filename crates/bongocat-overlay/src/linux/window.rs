@@ -1,38 +1,34 @@
-//! Presenting the renderer's frames into the Wayland model window.
+//! Presenting the renderer's frames into the model window.
 
 use super::*;
 
 /// The model window and the `wgpu` surface that presents into it.
 ///
 /// `surface` is declared before `window` so it drops first: the `wgpu` surface
-/// holds raw pointers to the window's `wl_surface` and to the display, and must
-/// never outlive either. The display itself is owned by the session, which
+/// holds raw pointers to the window and to the display connection (a
+/// `wl_surface` and `wl_display`, or an X11 window and `xcb_connection_t`), and
+/// must never outlive either. The display itself is owned by the session, which
 /// declares it after this window for the same reason.
 pub(crate) struct ModelWindow {
     surface: wgpu::Surface<'static>,
     config: wgpu::SurfaceConfiguration,
-    pub(crate) window: LayerWindow,
+    pub(crate) window: NativeWindow,
 }
 
 /// Open a layer window and the `wgpu` surface on it, before any device exists:
 /// the device is chosen to be compatible with this surface.
 pub(crate) fn open_window(
-    display: &mut WaylandDisplay,
+    display: &mut NativeDisplay,
     instance: &wgpu::Instance,
     bounds: Option<OverlayWindowBounds>,
     default_size: (u32, u32),
     options: OverlaySessionOptions,
-) -> Result<(LayerWindow, wgpu::Surface<'static>), OverlayError> {
-    let window = display.create_window(
-        bounds,
-        default_size,
-        options.always_on_top,
-        options.click_through,
-    )?;
+) -> Result<(NativeWindow, wgpu::Surface<'static>), OverlayError> {
+    let window = display.create_window(bounds, default_size, options)?;
     let (raw_display_handle, raw_window_handle) = display.raw_handles(&window)?;
     // SAFETY: both handles point at live objects of `display`'s connection: the
-    // `wl_display` lives as long as `display`, and the `wl_surface` as long as
-    // `window`. The surface returned here is only ever stored in a
+    // connection lives as long as `display`, and the window as long as `window`
+    // (an X11 window until `NativeWindow::close`). The surface returned here is only ever stored in a
     // `ModelWindow` together with `window`, declared before it so it drops
     // first, and the session owning that `ModelWindow` declares `display` after
     // it. Neither object is therefore destroyed while the surface exists.
@@ -42,7 +38,7 @@ pub(crate) fn open_window(
             raw_window_handle,
         })
     }
-    .map_err(|error| OverlayError::new(format!("create the Wayland GPU surface: {error}")))?;
+    .map_err(|error| OverlayError::new(format!("create the window GPU surface: {error}")))?;
     Ok((window, surface))
 }
 
@@ -61,7 +57,7 @@ pub(crate) fn window_color_format(
     .find(|format| capabilities.formats.contains(format))
     .ok_or_else(|| {
         OverlayError::new(format!(
-            "the Wayland surface offers no UNORM colour format: {:?}",
+            "the window surface offers no UNORM colour format: {:?}",
             capabilities.formats
         ))
     })
@@ -69,10 +65,10 @@ pub(crate) fn window_color_format(
 
 impl ModelWindow {
     pub(crate) fn new(
-        window: LayerWindow,
+        window: NativeWindow,
         surface: wgpu::Surface<'static>,
         renderer: &Renderer,
-        display: &WaylandDisplay,
+        display: &NativeDisplay,
     ) -> Result<Self, OverlayError> {
         let capabilities = surface.get_capabilities(&renderer.context.adapter);
         // A transparent desktop pet needs the compositor to blend the frame by
@@ -86,7 +82,7 @@ impl ModelWindow {
         .find(|mode| capabilities.alpha_modes.contains(mode))
         .ok_or_else(|| {
             OverlayError::new(format!(
-                "the Wayland surface cannot be transparent: {:?}",
+                "the window surface cannot be transparent: {:?}",
                 capabilities.alpha_modes
             ))
         })?;
@@ -133,7 +129,7 @@ impl ModelWindow {
     pub(crate) fn present(
         &mut self,
         renderer: &mut Renderer,
-        display: &WaylandDisplay,
+        display: &NativeDisplay,
         verify: bool,
     ) -> Result<(), OverlayError> {
         let (width, height) = self.window.buffer_size(display);
@@ -149,21 +145,21 @@ impl ModelWindow {
             wgpu::CurrentSurfaceTexture::Suboptimal(texture) => (texture, true),
             wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
                 return Err(OverlayError::temporary_presentation_unavailable(
-                    "the Wayland surface has no frame available",
+                    "the window surface has no frame available",
                 ));
             }
             wgpu::CurrentSurfaceTexture::Outdated => {
                 self.reconfigure(renderer, width, height);
                 return Err(OverlayError::temporary_presentation_unavailable(
-                    "the Wayland surface was outdated and is reconfigured",
+                    "the window surface was outdated and is reconfigured",
                 ));
             }
             wgpu::CurrentSurfaceTexture::Lost => {
-                return Err(OverlayError::new("the Wayland GPU surface was lost"));
+                return Err(OverlayError::new("the window GPU surface was lost"));
             }
             wgpu::CurrentSurfaceTexture::Validation => {
                 return Err(OverlayError::new(
-                    "acquiring the Wayland surface failed validation",
+                    "acquiring the window surface failed validation",
                 ));
             }
         };
@@ -188,6 +184,15 @@ impl ModelWindow {
         if suboptimal {
             self.reconfigure(renderer, width, height);
         }
-        Ok(())
+        self.window.after_present(display)
+    }
+
+    /// Release the GPU surface, then the window it presents into.
+    pub(crate) fn close(self, display: &NativeDisplay) {
+        let Self {
+            surface, window, ..
+        } = self;
+        drop(surface);
+        window.close(display);
     }
 }

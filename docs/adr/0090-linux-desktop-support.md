@@ -286,9 +286,29 @@ changes.
   Wayland that left-button drag follows the pointer, right-button drag grows
   and shrinks the window with its top-left corner fixed, and the position and
   size are restored on the next start.
-- **Remaining for L4:** multiple outputs,
-  the X11 backend (which can support hover hide), and removing the overlay
-  crate's Linux `dead_code` exemption.
+- **X11 backend.** A borderless 32-bit ARGB window on the adapter's own XCB
+  connection: `_MOTIF_WM_HINTS` without decorations, sticky, skipping taskbar
+  and pager, `_NET_WM_STATE_ABOVE` (or `BELOW`) for always-on-top,
+  `_NET_WM_WINDOW_OPACITY` for opacity and an empty input shape for
+  click-through. Bounds are root coordinates and placement uses the RandR
+  monitors. Pointer events arrive in root coordinates and are converted to
+  window coordinates against the applied origin, so the shared drag rules hold.
+  The window is mapped after its first frame so it never appears empty.
+- **Backend choice.** Wayland with `wlr-layer-shell` first; a Wayland
+  compositor without it (GNOME) and an X11 session use the X11 backend, through
+  XWayland in the first case. `BONGOCAT_LINUX_WINDOW=wayland|x11` forces one
+  for testing.
+- **X11 evidence.** `product_window_smoke` forced to X11 and run on the host
+  against XWayland (`DISPLAY=:0`) on KDE Plasma presents 301 frames in 5 s,
+  centred on the primary RandR monitor. `x11rb` is pinned to `=0.13.2`, the
+  version GPUI and `arboard` resolve, although 0.14.0 is the latest release:
+  a direct 0.14 dependency would duplicate the X11 protocol stack. Blocker
+  owner: `longbridge/gpui-kit` (through `gpui-pre-linux`) and `arboard`; lifted
+  when both move to 0.14. MIT OR Apache-2.0; no new crate in `Cargo.lock`.
+- **Remaining for L4:** hardware check of the X11 window (transparency, on top,
+  drag, resize), a real X11 session and GNOME, multiple outputs on Wayland,
+  hover hide on X11 (it needs the L5 input service to be running), and
+  removing the overlay crate's Linux `dead_code` exemption.
 
 ## Consequences
 

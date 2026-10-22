@@ -55,7 +55,7 @@ pub(crate) struct ProductOverlaySession {
     committed_origin: (i32, i32),
     placement: OverlayPlacementConstraint,
     session_started: Instant,
-    display: WaylandDisplay,
+    display: NativeDisplay,
 }
 
 impl ProductOverlaySession {
@@ -119,7 +119,10 @@ impl ProductOverlaySession {
             session_started: Instant::now(),
             display,
         };
-        session.apply_presentation();
+        if let Err(error) = session.apply_presentation() {
+            reject_model_commit(&session.runtime_client, &session.render_consumer, token)?;
+            return Err(error);
+        }
         if session.runtime_client.snapshot().overlay_visible {
             match session.present(true) {
                 Ok(()) => {}
@@ -150,8 +153,8 @@ impl ProductOverlaySession {
     fn open(
         frame: &RenderFrame,
         options: OverlaySessionOptions,
-    ) -> Result<(WaylandDisplay, ModelWindow, Renderer), OverlayError> {
-        let mut display = WaylandDisplay::connect()?;
+    ) -> Result<(NativeDisplay, ModelWindow, Renderer), OverlayError> {
+        let mut display = NativeDisplay::connect()?;
         let default_size = model_window_dimensions(frame.snapshot.canvas, options.scale_percent);
         let instance = GpuContext::instance(AdapterRequest::PRODUCT);
         let (layer, surface) = open_window(
@@ -187,20 +190,26 @@ impl ProductOverlaySession {
         )?;
         let window = ModelWindow::new(layer, surface, &self.renderer, &self.display)?;
         self.window = Some(window);
-        self.apply_presentation();
+        self.apply_presentation()
+    }
+
+    fn apply_presentation(&mut self) -> Result<(), OverlayError> {
+        let alpha = f64::from(self.options.opacity_percent) / 100.0;
+        if let Some(window) = &mut self.window {
+            window.window.apply(
+                &self.display,
+                alpha,
+                self.options.click_through,
+                self.options.always_on_top,
+            )?;
+        }
         Ok(())
     }
 
-    fn apply_presentation(&mut self) {
-        let alpha = f64::from(self.options.opacity_percent) / 100.0;
-        let click_through = self.options.click_through;
-        let always_on_top = self.options.always_on_top;
-        if let Some(window) = &mut self.window {
-            window.window.set_opacity(alpha);
-            window
-                .window
-                .set_click_through(&self.display, click_through);
-            window.window.set_always_on_top(always_on_top);
+    /// Release the window; it reopens at the same box when shown again.
+    fn close_window(&mut self) {
+        if let Some(window) = self.window.take() {
+            window.close(&self.display);
         }
     }
 
@@ -219,10 +228,14 @@ impl ProductOverlaySession {
         Ok(())
     }
 
-    fn apply_bounds(&mut self) {
+    fn apply_bounds(&mut self) -> Result<(), OverlayError> {
         if let Some(window) = &mut self.window {
-            window.window.set_bounds(self.bounds);
+            window.window.set_bounds(&self.display, self.bounds)?;
         }
+        if !self.display.moves_with_frames() {
+            self.committed_origin = (self.bounds.x, self.bounds.y);
+        }
+        Ok(())
     }
 
     /// The window size a resize drag treats as `100%`: the size the window is
@@ -238,8 +251,9 @@ impl ProductOverlaySession {
     }
 
     /// Apply this tick's pointer events in the order they arrived.
-    fn handle_pointer(&mut self) {
-        for event in self.display.take_pointer_events() {
+    fn handle_pointer(&mut self) -> Result<(), OverlayError> {
+        let window = self.window.as_ref().map(|window| &window.window);
+        for event in self.display.take_pointer_events(window) {
             let outcome = self.pointer.handle(
                 event,
                 self.bounds,
@@ -248,12 +262,13 @@ impl ProductOverlaySession {
             );
             if let Some(bounds) = outcome.bounds {
                 self.bounds = bounds;
-                self.apply_bounds();
+                self.apply_bounds()?;
             }
             if let (Some(scale_percent), Some(sender)) = (outcome.resized_to, &self.resize_sender) {
                 let _ = sender.try_send(OverlayResizeOutcome { scale_percent });
             }
         }
+        Ok(())
     }
 
     fn defer_drawable_unavailable(&mut self) -> OverlayTickOutcome {
@@ -307,7 +322,7 @@ impl ProductOverlaySession {
         let next_options = self
             .options
             .with_runtime_settings(runtime_snapshot.overlay_settings);
-        self.handle_pointer();
+        self.handle_pointer()?;
         if next_options != self.options {
             // A resize drag already sized the window before its scale reached
             // the configuration, so the scale it wrote back is not applied twice.
@@ -317,38 +332,33 @@ impl ProductOverlaySession {
                 self.bounds = self
                     .bounds
                     .rescale(self.options.scale_percent, next_options.scale_percent);
-                self.apply_bounds();
+                self.apply_bounds()?;
             }
             self.renderer.corner_radius_percent = next_options.corner_radius_percent;
             self.options = next_options;
-            self.apply_presentation();
+            self.apply_presentation()?;
         }
         if self.options.keep_inside_screen
             && !self.pointer.moving()
             && let Some(window) = &self.window
         {
-            let output = window.window.output_bounds();
+            let display = &self.display;
             let correction =
                 self.placement
                     .observe(self.bounds, self.session_started.elapsed(), || {
-                        vec![OverlayScreenBounds {
-                            x: output.x,
-                            y: output.y,
-                            width: output.width,
-                            height: output.height,
-                        }]
+                        display.screens(&window.window)
                     });
             if let Some(correction) = correction {
                 self.bounds = correction;
-                self.apply_bounds();
+                self.apply_bounds()?;
             }
         }
         self.options.maximum_fps = runtime_snapshot.maximum_fps;
         let overlay_visible = runtime_snapshot.overlay_visible;
         if !overlay_visible {
-            // Unmapping a layer surface means destroying it; it reopens at the
-            // same box when the overlay is shown again.
-            self.window = None;
+            // Unmapping a layer surface means destroying it; both backends
+            // reopen the window at the same box when the overlay is shown.
+            self.close_window();
         }
 
         if let Some(token) = self.pending_initial_model_commit {
@@ -390,9 +400,7 @@ impl ProductOverlaySession {
                         // aspect ratio, exactly like a macOS model switch.
                         self.bounds =
                             model_switch_window_bounds(self.bounds, frame.snapshot.canvas);
-                        if let Some(window) = &mut self.window {
-                            window.window.set_bounds(self.bounds);
-                        }
+                        self.apply_bounds()?;
                         if overlay_visible {
                             match self.present(true) {
                                 Ok(()) => {}
@@ -496,16 +504,7 @@ impl ProductOverlaySession {
         while self.render_consumer.take_latest().is_some() {}
         let placement_fully_visible = !self.options.keep_inside_screen
             || self.window.as_ref().is_none_or(|window| {
-                let output = window.window.output_bounds();
-                bounds_inside_screens(
-                    &[OverlayScreenBounds {
-                        x: output.x,
-                        y: output.y,
-                        width: output.width,
-                        height: output.height,
-                    }],
-                    self.bounds,
-                )
+                bounds_inside_screens(&self.display.screens(&window.window), self.bounds)
             });
         let report = ProductOverlayReport {
             frames_presented: self.frames_presented,
@@ -522,7 +521,7 @@ impl ProductOverlaySession {
         };
         // Release the window before the device, explicitly, so the order does
         // not depend on the struct layout alone.
-        self.window = None;
+        self.close_window();
         Ok(report)
     }
 }
