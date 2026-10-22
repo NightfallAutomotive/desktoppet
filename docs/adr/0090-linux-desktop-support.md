@@ -282,7 +282,11 @@ changes.
   hidden pet passes input through, so it could never see the pointer leave. A
   right-click without a drag shows no menu, because `muda` has no GTK-free
   context menu; a Linux menu presentation is L6.
-- **Remaining for L4:** hardware check of drag and resize, multiple outputs,
+- **Hardware check (2026-10-23).** The maintainer confirmed on KDE Plasma
+  Wayland that left-button drag follows the pointer, right-button drag grows
+  and shrinks the window with its top-left corner fixed, and the position and
+  size are restored on the next start.
+- **Remaining for L4:** multiple outputs,
   the X11 backend (which can support hover hide), and removing the overlay
   crate's Linux `dead_code` exemption.
 
