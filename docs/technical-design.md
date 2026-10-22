@@ -1,9 +1,9 @@
 # Technical Design
 
 状态：架构决策稿，Phase 0 证据补齐与 Phase 1 渐进实现并行
-最后更新：2026-09-25
+最后更新：2026-10-22
 首发平台：Windows 10 1903+、macOS 12+
-后续平台：Linux（首发后评估）
+后续平台：Linux `x86_64-unknown-linux-gnu`（ADR-0090 分阶段推进，L8 前不宣称支持）
 
 > BongoCat 采用单一 Rust 应用。GPUI 负责设置界面，Rust 平台模块直接负责输入、窗口、系统集成和 GPU 渲染。
 
@@ -80,7 +80,7 @@ Rust 2024 edition application
 
 ### 3.2 非目标
 
-- 首发不支持 Linux，不承诺 Wayland 全局输入能力。
+- 首发不支持 Linux；Linux 按 ADR-0090 分阶段推进，不承诺 Wayland 协议层面的全局输入能力。
 - 不提供进程内插件 ABI。
 - 不要求 Windows/macOS 像素完全一致。
 - 不把 GPUI fork、Zed 私有 UI crate 或第三方输入库变成业务 API。
@@ -1535,12 +1535,14 @@ Windows 使用 ETW/WPA、PresentMon、GPUView；macOS 使用 Instruments、Metal
 
 ## 14. Linux 策略
 
-Linux 是后续能力，不是隐藏的首发任务：
+Linux 按 ADR-0090 分阶段推进，阶段门禁（L1–L8）全部通过前不宣称 Linux 支持：
 
-- runtime、配置、模型和 UI 不使用 Windows/macOS 类型。
-- GPUI 保持 X11/Wayland 构建路径，但首期 CI 不发布 Linux 安装包。
-- X11 评估 XInput2；Wayland 全局输入受 compositor/portal 限制，不能承诺功能等价。
-- Linux renderer、托盘、启动项和打包单独立项并建立能力矩阵。
+- 目标只有 `x86_64-unknown-linux-gnu`；参考环境为 KDE Plasma 6 的 Wayland 与 X11 会话，GNOME Wayland 单独评估并允许显式部分支持。
+- runtime、配置、模型、输入 contract 和 UI 不使用 Linux 类型；Linux 代码只在 `bongocat-platform`、`bongocat-overlay`、`bongocat-live2d` 构建脚本、`bongocat-update` target 选择与 `bongocat-packaging` 的直接 `target_os = "linux"` 模块内；未实现能力返回强类型 `Unsupported` 并经 capability reporting 展示。
+- 主猫 overlay 是独立原生窗口：Wayland 用 `wlr-layer-shell` overlay 层，X11 用 `_NET_WM_STATE_ABOVE` 与 Shape 穿透；GPU backend 由 L3 spike 决定（首选 EGL 上的 OpenGL ES 3.0），只消费 `RenderSnapshot`。
+- 键鼠在 Wayland 与 X11 统一使用 listen-only evdev（不 `EVIOCGRAB`），`EVIOCGKEY` 校正 pressed set，systemd-logind 的睡眠、锁屏、VT/会话切换触发 Reset；`input` 组权限是显式权限状态。X11 用 XInput2/`XQueryPointer` 取绝对光标，Wayland 以 ADR-0081 的相对位移累积跟随并在诊断中说明限制。
+- 托盘用 StatusNotifierItem，全局快捷键用 `GlobalShortcuts` portal（X11 用键盘 grab），文件选择用 xdg portal，启动项用 XDG autostart，单实例用 `$XDG_RUNTIME_DIR` 下按环境隔离的 Unix socket。
+- 首个产物是由 `bongocat-packaging` 构建的 AppImage，更新 target 为 `linux-x86_64`；不做 Flatpak。
 - 不用轮询兼容层掩盖 Wayland 权限或协议缺失。
 
 ## 15. 风险与 Phase 0 退出条件
@@ -1582,7 +1584,7 @@ Windows 使用 D3D11，macOS 使用 Metal。模型窗口不嵌入 GPUI renderer�
 
 ### ADR-006：首发不支持 Linux，但不封死 Linux
 
-共享模块保持平台无关；Linux 的输入和窗口限制在后续能力矩阵中诚实处理。
+共享模块保持平台无关；Linux 的输入和窗口限制在后续能力矩阵中诚实处理。Linux 范围与阶段见 ADR-0090。
 
 ### ADR-007：单一 Rust 运行环境
 

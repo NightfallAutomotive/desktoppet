@@ -1,7 +1,9 @@
 # ADR-0006: Linux Is a Post-Launch Evaluation
 
-状态：Accepted
+状态：Accepted；Linux 支持范围与阶段由 ADR-0090 部分取代
 日期：2026-08-28
+
+> 后续修订（2026-10-22）：Windows/macOS 已发布，本 fork 按 ADR-0090 分阶段推进 `x86_64-unknown-linux-gnu`。共享 crate 平台无关、不得承诺 Wayland 等价全局输入、能力不足时显式降级的原则继续有效；“Linux 不进入支持矩阵”与全面禁止 Linux cfg 的约束由 ADR-0090 的阶段门禁与 adapter 路径规则取代。
 
 ## Context
 
