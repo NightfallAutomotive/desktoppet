@@ -5,6 +5,12 @@
 //! kernel's auto-repeat is ignored, relative pointer motion is summed per
 //! report, and a `SYN_DROPPED` asks the worker to reconcile at once, because
 //! the kernel discarded events and an edge may be among them.
+//!
+//! A touchpad reports where a finger is rather than how far it moved, so its
+//! motion is the change between consecutive positions while exactly one finger
+//! is down, scaled to pixels. Two- and three-finger gestures are scrolling or
+//! swiping, not pointing, and move nothing; the touch and tool codes are touch
+//! state, not keys.
 
 use super::keymap::{BUTTON_END, BUTTON_FIRST, mouse_button, physical_key};
 use bongocat_input::{InputControl, InputEdge};
@@ -12,6 +18,15 @@ use bongocat_input::{InputControl, InputEdge};
 pub(crate) const EV_SYN: u16 = 0x00;
 pub(crate) const EV_KEY: u16 = 0x01;
 pub(crate) const EV_REL: u16 = 0x02;
+pub(crate) const EV_ABS: u16 = 0x03;
+pub(crate) const ABS_X: u16 = 0x00;
+pub(crate) const ABS_Y: u16 = 0x01;
+const BTN_TOUCH: u16 = 0x14a;
+const BTN_TOOL_FINGER: u16 = 0x145;
+/// `BTN_TOOL_DOUBLETAP` to `BTN_TOOL_QUINTTAP`: more than one finger.
+const BTN_TOOL_MULTI_FINGER: std::ops::RangeInclusive<u16> = 0x148..=0x14f;
+/// The digitizer and tool codes (`BTN_DIGI`..`BTN_WHEEL`): touch state, not keys.
+const DIGITIZER_CODES: std::ops::Range<u16> = 0x140..0x150;
 pub(crate) const SYN_REPORT: u16 = 0;
 pub(crate) const SYN_DROPPED: u16 = 3;
 pub(crate) const REL_X: u16 = 0x00;
@@ -40,15 +55,76 @@ pub(crate) enum Decoded {
     Unmapped,
 }
 
+/// Pixels per axis unit of a touchpad.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct TouchpadScale {
+    pub(crate) x: f64,
+    pub(crate) y: f64,
+}
+
+#[derive(Debug, Default)]
+struct Touch {
+    scale: Option<TouchpadScale>,
+    touching: bool,
+    single_finger: bool,
+    /// Fingers beyond the first are down: a gesture, not pointing.
+    multi_finger: bool,
+    last: (Option<i32>, Option<i32>),
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct Decoder {
     pending_motion: (f64, f64),
     /// Between a `SYN_DROPPED` and the next `SYN_REPORT` every event is stale
     /// and is discarded, as the evdev protocol requires.
     dropping: bool,
+    touch: Touch,
 }
 
 impl Decoder {
+    /// A decoder for a touchpad, whose finger positions become motion.
+    pub(crate) fn for_touchpad(scale: TouchpadScale) -> Self {
+        Self {
+            touch: Touch {
+                scale: Some(scale),
+                ..Touch::default()
+            },
+            ..Self::default()
+        }
+    }
+
+    fn pointing(&self) -> bool {
+        self.touch.touching && self.touch.single_finger && !self.touch.multi_finger
+    }
+
+    fn absolute(&mut self, axis: u16, value: i32) {
+        let Some(scale) = self.touch.scale else {
+            return;
+        };
+        let pointing = self.pointing();
+        let (last, factor, pending) = if axis == ABS_X {
+            (&mut self.touch.last.0, scale.x, &mut self.pending_motion.0)
+        } else {
+            (&mut self.touch.last.1, scale.y, &mut self.pending_motion.1)
+        };
+        if pointing && let Some(previous) = *last {
+            *pending += f64::from(value - previous) * factor;
+        }
+        *last = pointing.then_some(value);
+    }
+
+    fn touch_state(&mut self, code: u16, down: bool) {
+        match code {
+            BTN_TOUCH => self.touch.touching = down,
+            BTN_TOOL_FINGER => self.touch.single_finger = down,
+            code if BTN_TOOL_MULTI_FINGER.contains(&code) => self.touch.multi_finger = down,
+            _ => {}
+        }
+        // Any change of fingers starts a new stroke: positions from before it
+        // must not become motion.
+        self.touch.last = (None, None);
+    }
+
     /// Decode one event; most events decode to nothing until their report ends.
     pub(crate) fn decode(&mut self, event: RawEvent) -> Option<Decoded> {
         if self.dropping {
@@ -61,7 +137,18 @@ impl Decoder {
             (EV_SYN, SYN_DROPPED) => {
                 self.dropping = true;
                 self.pending_motion = (0.0, 0.0);
+                self.touch.last = (None, None);
                 Some(Decoded::Resync)
+            }
+            (EV_ABS, axis @ (ABS_X | ABS_Y)) => {
+                self.absolute(axis, event.value);
+                None
+            }
+            (EV_KEY, code) if DIGITIZER_CODES.contains(&code) => {
+                if event.value != 2 {
+                    self.touch_state(code, event.value != 0);
+                }
+                None
             }
             (EV_SYN, SYN_REPORT) => {
                 let (dx, dy) = std::mem::take(&mut self.pending_motion);
@@ -209,6 +296,78 @@ mod tests {
             decoder.decode(key(30, 1)),
             Some(Decoded::Edge { .. })
         ));
+    }
+
+    fn abs(code: u16, value: i32) -> RawEvent {
+        RawEvent {
+            kind: EV_ABS,
+            code,
+            value,
+        }
+    }
+
+    fn touchpad() -> Decoder {
+        Decoder::for_touchpad(TouchpadScale { x: 0.5, y: 0.25 })
+    }
+
+    #[test]
+    fn one_finger_on_a_touchpad_moves_by_its_position_change() {
+        let mut decoder = touchpad();
+        for event in [
+            key(BTN_TOUCH, 1),
+            key(BTN_TOOL_FINGER, 1),
+            abs(ABS_X, 100),
+            abs(ABS_Y, 100),
+        ] {
+            assert_eq!(decoder.decode(event), None);
+        }
+        assert_eq!(
+            decoder.decode(REPORT),
+            None,
+            "the first position is not motion"
+        );
+        decoder.decode(abs(ABS_X, 140));
+        decoder.decode(abs(ABS_Y, 80));
+        assert_eq!(
+            decoder.decode(REPORT),
+            Some(Decoded::Motion { dx: 20.0, dy: -5.0 })
+        );
+        // Lifting the finger ends the stroke: the next touch starts fresh.
+        decoder.decode(key(BTN_TOUCH, 0));
+        decoder.decode(key(BTN_TOOL_FINGER, 0));
+        decoder.decode(REPORT);
+        decoder.decode(key(BTN_TOUCH, 1));
+        decoder.decode(key(BTN_TOOL_FINGER, 1));
+        decoder.decode(abs(ABS_X, 900));
+        assert_eq!(decoder.decode(REPORT), None, "no jump to the new touch");
+    }
+
+    #[test]
+    fn a_two_finger_gesture_moves_nothing() {
+        let mut decoder = touchpad();
+        decoder.decode(key(BTN_TOUCH, 1));
+        decoder.decode(key(BTN_TOOL_FINGER, 1));
+        decoder.decode(abs(ABS_X, 100));
+        decoder.decode(REPORT);
+        decoder.decode(key(BTN_TOOL_FINGER, 0));
+        decoder.decode(key(0x14d, 1));
+        decoder.decode(abs(ABS_X, 300));
+        assert_eq!(decoder.decode(REPORT), None);
+    }
+
+    #[test]
+    fn touch_codes_are_not_counted_as_unmapped_keys() {
+        let mut decoder = Decoder::default();
+        assert_eq!(decoder.decode(key(BTN_TOUCH, 1)), None);
+        assert_eq!(decoder.decode(key(BTN_TOOL_FINGER, 1)), None);
+    }
+
+    #[test]
+    fn a_mouse_ignores_absolute_axes() {
+        let mut decoder = Decoder::default();
+        decoder.decode(abs(ABS_X, 10));
+        decoder.decode(abs(ABS_X, 50));
+        assert_eq!(decoder.decode(REPORT), None);
     }
 
     #[test]

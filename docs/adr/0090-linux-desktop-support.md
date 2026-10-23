@@ -359,7 +359,15 @@ changes.
   6.0.0 is the latest; a direct 6.x dependency would duplicate the D-Bus stack.
   Blocker owners: `longbridge/gpui-kit` (through `accesskit_unix`), `ashpd`,
   `ksni`. MIT; no new crate in `Cargo.lock`.
-- **Remaining for L5:** touchpads (absolute motion),
+- **Touchpads.** A device with a finger tool and `ABS_X`/`ABS_Y` is opened as
+  a touchpad: while exactly one finger is down, the change between consecutive
+  positions becomes motion, scaled to 8 px per mm from the axis resolution
+  (`EVIOCGABS`). Multi-finger gestures move nothing, and touch and tool codes
+  are touch state rather than unmapped keys. On the maintainer's laptop the
+  service opens the keyboard, the ELAN touchpad's mouse interface (its click
+  buttons) and the touchpad itself, and skips the power, lid, hotkey and audio
+  nodes.
+- **Remaining for L5:** touchpad hardware check (absolute motion),
   gamepads through `gilrs` with its idle-CPU retest, the stress test for zero
   lost edges, and the issue #47 lifecycle matrix (lock, sleep, VT switch,
   hot-plug).

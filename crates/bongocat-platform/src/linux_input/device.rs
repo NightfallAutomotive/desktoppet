@@ -6,7 +6,10 @@
 //! `EVIOCGKEY` to read which keys and buttons are down right now, which is what
 //! reconciliation compares against.
 
-use super::decoder::{EV_KEY, EV_REL, INPUT_EVENT_SIZE, REL_X, RawEvent, parse_events};
+use super::decoder::{
+    ABS_X, ABS_Y, EV_ABS, EV_KEY, EV_REL, INPUT_EVENT_SIZE, REL_X, RawEvent, TouchpadScale,
+    parse_events,
+};
 use std::{
     fs::{File, OpenOptions},
     io::{self, Read},
@@ -24,6 +27,12 @@ const KEY_BYTES: usize = KEY_MAX / 8 + 1;
 const EV_BYTES: usize = 0x1f / 8 + 1;
 const KEY_A: usize = 30;
 const BTN_LEFT: usize = 0x110;
+const BTN_TOOL_FINGER: usize = 0x145;
+/// Pointer speed on a touchpad, in pixels per millimetre of finger travel: a
+/// moderate unaccelerated speed, since the model only follows the motion.
+const TOUCHPAD_PIXELS_PER_MM: f64 = 8.0;
+/// The width assumed for a touchpad that reports no resolution.
+const TOUCHPAD_FALLBACK_WIDTH_MM: f64 = 100.0;
 
 /// `_IOC(_IOC_READ, 'E', nr, size)` from `<asm-generic/ioctl.h>`.
 const fn ioc_read(nr: u32, size: usize) -> u32 {
@@ -35,6 +44,39 @@ const fn eviocgbit(event_type: u16, size: usize) -> u32 {
 }
 
 const EVIOCGKEY: u32 = ioc_read(0x18, KEY_BYTES);
+
+/// `struct input_absinfo`: six `i32` fields.
+const ABSINFO_BYTES: usize = 24;
+
+const fn eviocgabs(axis: u16) -> u32 {
+    ioc_read(0x40 + axis as u32, ABSINFO_BYTES)
+}
+
+/// `(minimum, maximum, resolution)` of one absolute axis.
+fn axis_info(file: &File, axis: u16) -> io::Result<(i32, i32, i32)> {
+    let mut info = [0_u8; ABSINFO_BYTES];
+    read_bits(file, eviocgabs(axis), &mut info)?;
+    let field = |index: usize| {
+        i32::from_ne_bytes([
+            info[index * 4],
+            info[index * 4 + 1],
+            info[index * 4 + 2],
+            info[index * 4 + 3],
+        ])
+    };
+    // value, minimum, maximum, fuzz, flat, resolution (units per mm).
+    Ok((field(1), field(2), field(5)))
+}
+
+/// Pixels per axis unit for a touchpad axis.
+pub(crate) fn touchpad_axis_scale(minimum: i32, maximum: i32, resolution: i32) -> f64 {
+    let units_per_mm = if resolution > 0 {
+        f64::from(resolution)
+    } else {
+        (f64::from(maximum) - f64::from(minimum)).max(1.0) / TOUCHPAD_FALLBACK_WIDTH_MM
+    };
+    TOUCHPAD_PIXELS_PER_MM / units_per_mm
+}
 
 fn bit(bits: &[u8], index: usize) -> bool {
     bits.get(index / 8)
@@ -63,16 +105,18 @@ fn read_bits(file: &File, request: u32, buffer: &mut [u8]) -> io::Result<()> {
 }
 
 /// What a device can report, as far as the product is concerned. Only
-/// keyboards and mice are opened.
+/// keyboards, mice and touchpads are opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct DeviceKind {
-    pub(crate) keyboard: bool,
-    pub(crate) mouse: bool,
+    keyboard: bool,
+    mouse: bool,
+    touchpad: bool,
 }
 
 pub(crate) struct InputDevice {
     path: PathBuf,
     file: File,
+    touchpad: Option<TouchpadScale>,
 }
 
 /// Why a node was not opened.
@@ -106,19 +150,47 @@ impl InputDevice {
             read_bits(&file, eviocgbit(EV_REL, 1), &mut relative)
                 .map_err(|_| OpenError::Skipped)?;
         }
+        let mut absolute = [0_u8; 8];
+        if bit(&types, usize::from(EV_ABS)) {
+            read_bits(&file, eviocgbit(EV_ABS, 8), &mut absolute)
+                .map_err(|_| OpenError::Skipped)?;
+        }
         let kind = DeviceKind {
             // Every keyboard has letter keys; power buttons and media remotes
             // that only report EV_KEY do not.
             keyboard: bit(&keys, KEY_A),
             mouse: bit(&keys, BTN_LEFT) && bit(&relative, usize::from(REL_X)),
+            // A touchpad reports finger positions, not motion; a tablet or a
+            // touchscreen has no finger tool and is not a pointer to follow.
+            touchpad: bit(&keys, BTN_TOOL_FINGER)
+                && bit(&absolute, usize::from(ABS_X))
+                && bit(&absolute, usize::from(ABS_Y)),
         };
-        if !kind.keyboard && !kind.mouse {
+        if !kind.keyboard && !kind.mouse && !kind.touchpad {
             return Err(OpenError::Skipped);
         }
+        let touchpad = if kind.touchpad {
+            let (x_min, x_max, x_resolution) =
+                axis_info(&file, ABS_X).map_err(|_| OpenError::Skipped)?;
+            let (y_min, y_max, y_resolution) =
+                axis_info(&file, ABS_Y).map_err(|_| OpenError::Skipped)?;
+            Some(TouchpadScale {
+                x: touchpad_axis_scale(x_min, x_max, x_resolution),
+                y: touchpad_axis_scale(y_min, y_max, y_resolution),
+            })
+        } else {
+            None
+        };
         Ok(Self {
             path: path.to_path_buf(),
             file,
+            touchpad,
         })
+    }
+
+    /// The motion scale when this device is a touchpad.
+    pub(crate) fn touchpad(&self) -> Option<TouchpadScale> {
+        self.touchpad
     }
 
     pub(crate) fn path(&self) -> &Path {
@@ -198,6 +270,8 @@ mod tests {
         assert_eq!(eviocgbit(0, 4), 0x8004_4520);
         assert_eq!(eviocgbit(EV_KEY, KEY_BYTES), 0x8060_4521);
         assert_eq!(EVIOCGKEY, 0x8060_4518);
+        // EVIOCGABS(ABS_Y) reads a 24-byte input_absinfo.
+        assert_eq!(eviocgabs(ABS_Y), 0x8018_4541);
     }
 
     #[test]
@@ -207,6 +281,14 @@ mod tests {
         assert!(bit(&bits, 15));
         assert!(!bit(&bits, 0));
         assert!(!bit(&bits, 64), "past the end is clear");
+    }
+
+    #[test]
+    fn touchpad_motion_scales_by_the_reported_resolution() {
+        // 32 units per mm moves 8 px per mm: a quarter pixel per unit.
+        assert!((touchpad_axis_scale(0, 3200, 32) - 0.25).abs() < 1e-9);
+        // No resolution: the axis is assumed to be 100 mm wide.
+        assert!((touchpad_axis_scale(0, 1000, 0) - 0.8).abs() < 1e-9);
     }
 
     #[test]

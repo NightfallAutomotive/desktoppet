@@ -189,8 +189,10 @@ fn scan(directory: &Path, open: &[OpenDevice]) -> (Vec<OpenDevice>, bool) {
         .iter()
         .filter_map(|path| match InputDevice::open(path) {
             Ok(device) => Some(OpenDevice {
+                decoder: device
+                    .touchpad()
+                    .map_or_else(Decoder::default, Decoder::for_touchpad),
                 device,
-                decoder: Decoder::default(),
             }),
             Err(OpenError::PermissionDenied) => {
                 permission_denied = true;
@@ -480,6 +482,26 @@ mod tests {
         ) -> Result<(), bongocat_input::InputSubmitError> {
             Ok(())
         }
+    }
+
+    /// Which of this machine's input nodes the service opens, and which of
+    /// them it treats as touchpads. Prints no key data.
+    #[test]
+    #[ignore = "needs read access to /dev/input"]
+    fn list_the_devices_this_machine_offers() {
+        let (devices, permission_denied) = scan(Path::new(INPUT_DIRECTORY), &[]);
+        assert!(
+            !permission_denied || !devices.is_empty(),
+            "no access to /dev/input"
+        );
+        for device in &devices {
+            eprintln!(
+                "{}: touchpad scale {:?}",
+                device.device.path().display(),
+                device.device.touchpad()
+            );
+        }
+        assert!(!devices.is_empty());
     }
 
     #[test]
