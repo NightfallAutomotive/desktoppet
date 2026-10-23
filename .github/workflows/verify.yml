@@ -264,7 +264,7 @@ jobs:
           sudo apt-get install --yes --no-install-recommends \
             pkg-config libasound2-dev libfontconfig1-dev libfreetype6-dev \
             libwayland-dev libx11-xcb-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libvulkan-dev mesa-vulkan-drivers
+            libvulkan-dev mesa-vulkan-drivers libudev-dev
       - name: Cache Cargo artifacts
         uses: actions/cache@v6
         with:

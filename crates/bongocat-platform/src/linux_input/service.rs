@@ -11,7 +11,10 @@
 //!   dropped events, the pressed set is re-read from the devices with
 //!   `EVIOCGKEY`, so a release that was missed is cleared;
 //! - a device that disappears resets the input state (`DeviceRemoved`);
-//! - new devices are picked up every [`RESCAN_INTERVAL`].
+//! - new devices are picked up every [`RESCAN_INTERVAL`];
+//! - gamepads come from the shared `gilrs` adapter (ADR-0066), which reads its
+//!   own device nodes, so while one is connected the worker polls every
+//!   [`GAMEPAD_POLL_TIMEOUT_MS`] instead of [`POLL_TIMEOUT_MS`].
 //!
 //! Wayland has no global cursor position, so the position the model follows is
 //! accumulated from relative motion inside a viewport the overlay supplies
@@ -23,7 +26,7 @@ use super::{
     device::{InputDevice, OpenError, poll_readable},
     session_watch::SessionWatch,
 };
-use crate::PlatformInputError;
+use crate::{PlatformInputError, gilrs_gamepad::GilrsGamepad};
 use bongocat_input::{
     CursorDelta, CursorMotionAccumulator, CursorPosition, CursorProducer, CursorSample,
     CursorViewport, GamepadAxisProducer, InputControl, InputEvent, InputProducer,
@@ -48,7 +51,13 @@ pub(crate) const RECONCILIATION_INTERVAL: Duration = Duration::from_millis(250);
 pub(crate) const RESCAN_INTERVAL: Duration = Duration::from_secs(1);
 /// How long one `poll` may wait, which bounds how long a stop request waits.
 const POLL_TIMEOUT_MS: i32 = 50;
+/// The `poll` wait while a gamepad is connected: `gilrs` events are only read
+/// between polls, so this bounds gamepad latency.
+const GAMEPAD_POLL_TIMEOUT_MS: i32 = 8;
 const STARTUP_TIMEOUT: Duration = Duration::from_secs(2);
+/// The shutdown reset is retried this often, as on macOS and Windows.
+const FINAL_RESET_ATTEMPTS: u32 = 20;
+const FINAL_RESET_RETRY: Duration = Duration::from_millis(5);
 const SERVICE_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// The viewport the cursor is accumulated in before the overlay names one.
@@ -73,8 +82,6 @@ impl LinuxInputService {
         diagnostics_producer: PlatformInputDiagnosticsProducer,
         viewport: CursorViewport,
     ) -> Result<Self, PlatformInputError> {
-        // Gamepads come from the gilrs backend in a later step of stage L5.
-        drop(gamepad_axis_producer);
         let stop = Arc::new(AtomicBool::new(false));
         let viewport = Arc::new(Mutex::new(viewport));
         let (startup_sender, startup_receiver) = mpsc::sync_channel(1);
@@ -89,6 +96,7 @@ impl LinuxInputService {
                     Worker::new(
                         producer,
                         cursor_producer,
+                        gamepad_axis_producer,
                         diagnostics_producer,
                         worker_viewport,
                         worker_stop,
@@ -206,6 +214,7 @@ fn scan(directory: &Path, open: &[OpenDevice]) -> (Vec<OpenDevice>, bool) {
 
 struct Worker {
     producer: InputProducer,
+    gamepad: GilrsGamepad,
     cursor_producer: CursorProducer,
     diagnostics_producer: PlatformInputDiagnosticsProducer,
     viewport: Arc<Mutex<CursorViewport>>,
@@ -228,11 +237,13 @@ impl Worker {
     fn new(
         producer: InputProducer,
         cursor_producer: CursorProducer,
+        gamepad_axis_producer: GamepadAxisProducer,
         diagnostics_producer: PlatformInputDiagnosticsProducer,
         viewport: Arc<Mutex<CursorViewport>>,
         stop: Arc<AtomicBool>,
     ) -> Self {
         Self {
+            gamepad: GilrsGamepad::new(producer.clone(), gamepad_axis_producer),
             producer,
             cursor_producer,
             diagnostics_producer,
@@ -281,8 +292,13 @@ impl Worker {
                 .iter()
                 .map(|device| device.device.raw_fd())
                 .collect::<Vec<_>>();
-            let readable = poll_readable(&fds, POLL_TIMEOUT_MS)
-                .map_err(|_| PlatformInputError::WorkerPanicked)?;
+            let timeout = if self.gamepad.has_connections() {
+                GAMEPAD_POLL_TIMEOUT_MS
+            } else {
+                POLL_TIMEOUT_MS
+            };
+            let readable =
+                poll_readable(&fds, timeout).map_err(|_| PlatformInputError::WorkerPanicked)?;
             let mut reconcile_now = false;
             let mut removed = Vec::new();
             let mut motion = CursorDelta::default();
@@ -347,6 +363,16 @@ impl Worker {
             if motion != CursorDelta::default() {
                 self.publish_cursor(motion);
             }
+            let at = self.now();
+            match self.gamepad.drain(at, &mut self.diagnostics) {
+                Ok(()) => {}
+                Err(InputPublishError::QueueFull(_)) => {
+                    self.diagnostics.runtime_queue_overflows =
+                        self.diagnostics.runtime_queue_overflows.saturating_add(1);
+                    self.recovery_pending = true;
+                }
+                Err(InputPublishError::RuntimeStopped(_)) => return Ok(self.stopped()),
+            }
             if self.recovery_pending
                 && let Published::RuntimeStopped = self.reset(InputResetReason::QueueOverflow)
             {
@@ -389,7 +415,16 @@ impl Worker {
                 self.recovery_pending = false;
                 self.diagnostics.recovery_resets =
                     self.diagnostics.recovery_resets.saturating_add(1);
-                Published::Delivered
+                // The reset cleared every gamepad's connection and held state
+                // in the runtime; replay what is still connected and held.
+                match self.gamepad.reseed(at, &mut self.diagnostics) {
+                    Ok(()) => Published::Delivered,
+                    Err(InputPublishError::QueueFull(_)) => {
+                        self.recovery_pending = true;
+                        Published::Overflowed
+                    }
+                    Err(InputPublishError::RuntimeStopped(_)) => Published::RuntimeStopped,
+                }
             }
             Err(InputPublishError::QueueFull(_)) => {
                 self.recovery_pending = true;
@@ -444,13 +479,45 @@ impl Worker {
         }
     }
 
+    /// Publish the shutdown reset, retrying briefly while the queue is full.
+    fn final_reset(&mut self) -> bool {
+        for _ in 0..FINAL_RESET_ATTEMPTS {
+            match self
+                .producer
+                .recover(InputResetReason::ServiceRestart, self.now())
+            {
+                Ok(_) => {
+                    self.diagnostics.recovery_resets =
+                        self.diagnostics.recovery_resets.saturating_add(1);
+                    return true;
+                }
+                Err(InputPublishError::QueueFull(_)) => {
+                    self.diagnostics.runtime_queue_overflows =
+                        self.diagnostics.runtime_queue_overflows.saturating_add(1);
+                    thread::sleep(FINAL_RESET_RETRY);
+                }
+                Err(InputPublishError::RuntimeStopped(_)) => return false,
+            }
+        }
+        false
+    }
+
     fn publish_diagnostics(&self) {
         let _ = self.diagnostics_producer.publish(self.diagnostics);
     }
 
     fn stopped(mut self) -> PlatformInputDiagnostics {
+        let gamepad = self.gamepad.shutdown();
+        self.diagnostics.gamepad_disconnections = self
+            .diagnostics
+            .gamepad_disconnections
+            .saturating_add(gamepad.disconnected);
+        // Whatever was held when input stopped will never be released by this
+        // service, so the runtime is reset on the way out, as on the other
+        // platforms; a shutdown that could not deliver it is not clean.
+        let final_reset = self.final_reset();
         self.diagnostics.service_status = PlatformInputServiceStatus::Stopped;
-        self.diagnostics.clean_shutdown = true;
+        self.diagnostics.clean_shutdown = gamepad.backend_clean && final_reset;
         self.publish_diagnostics();
         self.diagnostics
     }
@@ -465,6 +532,7 @@ mod tests {
         let worker = Worker::new(
             InputProducer::new(Arc::new(NullSubmitter)),
             CursorProducer::new(),
+            GamepadAxisProducer::default(),
             PlatformInputDiagnosticsProducer::default(),
             Arc::new(Mutex::new(DEFAULT_CURSOR_VIEWPORT)),
             Arc::new(AtomicBool::new(true)),
@@ -502,6 +570,53 @@ mod tests {
             );
         }
         assert!(!devices.is_empty());
+    }
+
+    /// User plus system CPU time of this process, in clock ticks.
+    fn process_cpu_ticks() -> u64 {
+        let stat = std::fs::read_to_string("/proc/self/stat").expect("/proc/self/stat");
+        // Fields after the parenthesised command name; utime and stime are the
+        // 14th and 15th fields of the whole line.
+        let after_name = &stat[stat.rfind(')').expect("command name") + 2..];
+        let fields = after_name.split_whitespace().collect::<Vec<_>>();
+        fields[11].parse::<u64>().expect("utime") + fields[12].parse::<u64>().expect("stime")
+    }
+
+    /// AGENTS.md §6.1: an idle service, gamepad backend included, must not
+    /// spin, and stopping must join within the service timeout.
+    #[test]
+    #[ignore = "needs read access to /dev/input; measures for 10 s"]
+    fn the_idle_service_uses_little_cpu_and_stops_promptly() {
+        const IDLE: Duration = Duration::from_secs(10);
+        let service = LinuxInputService::start_with_diagnostics(
+            InputProducer::new(Arc::new(NullSubmitter)),
+            CursorProducer::new(),
+            GamepadAxisProducer::default(),
+            PlatformInputDiagnosticsProducer::default(),
+            DEFAULT_CURSOR_VIEWPORT,
+        )
+        .expect("service starts with access to /dev/input");
+        let before = process_cpu_ticks();
+        thread::sleep(IDLE);
+        let ticks = process_cpu_ticks() - before;
+        // SAFETY: sysconf only reads a process-wide constant.
+        let ticks_per_second = unsafe { libc::sysconf(libc::_SC_CLK_TCK) }.max(1) as u64;
+        let share = ticks as f64 / (ticks_per_second as f64 * IDLE.as_secs_f64());
+        let stopping = Instant::now();
+        let diagnostics = service.stop().expect("service stops");
+        let stop_time = stopping.elapsed();
+        eprintln!(
+            "idle CPU {:.2}% of one core over {IDLE:?}; stop joined in {stop_time:?}; {} reconciliations",
+            share * 100.0,
+            diagnostics.reconciliation_runs
+        );
+        assert!(
+            share < 0.02,
+            "idle service used {:.2}% of a core",
+            share * 100.0
+        );
+        assert!(stop_time < SERVICE_TIMEOUT, "stop took {stop_time:?}");
+        assert!(diagnostics.clean_shutdown);
     }
 
     #[test]

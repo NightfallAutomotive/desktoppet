@@ -367,7 +367,19 @@ changes.
   service opens the keyboard, the ELAN touchpad's mouse interface (its click
   buttons) and the touchpad itself, and skips the power, lid, hotkey and audio
   nodes.
-- **Remaining for L5:** touchpad hardware check (absolute motion),
+- **Gamepads.** The Linux worker uses the shared `GilrsGamepad` adapter from
+  the pinned `ayangweb/gilrs` fork (ADR-0066), as macOS and Windows do: it is
+  drained every cycle, reseeded after every reset, and shut down in the
+  worker's exit path, followed by a final `ServiceRestart` reset that a clean
+  shutdown requires. `gilrs` reads its own nodes, so the worker polls every
+  8 ms while a gamepad is connected and every 50 ms otherwise. The fork's Linux
+  backend adds `libudev-sys`, `nix`, `inotify` and `vec_map` (MIT, ISC,
+  Apache-2.0; already in `Cargo.lock`), and CI installs `libudev-dev`.
+- **§6.1 retest (2026-10-23).** With real devices, the idle service including
+  the gamepad backend used 0.70% of one core over 10 s and `stop()` joined in
+  68 ms against the 2 s budget, with a clean shutdown (ignored test
+  `the_idle_service_uses_little_cpu_and_stops_promptly`).
+- **Remaining for L5:** touchpad and gamepad hardware check (absolute motion),
   gamepads through `gilrs` with its idle-CPU retest, the stress test for zero
   lost edges, and the issue #47 lifecycle matrix (lock, sleep, VT switch,
   hot-plug).

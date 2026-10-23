@@ -197,6 +197,13 @@ impl GilrsGamepad {
         Ok(())
     }
 
+    /// Whether any gamepad is connected, so the caller can poll the backend
+    /// often enough for low button latency only when there is one.
+    #[cfg(target_os = "linux")]
+    pub(crate) fn has_connections(&self) -> bool {
+        self.connections.len() > 0
+    }
+
     pub(crate) fn shutdown(&mut self) -> GilrsShutdown {
         let disconnected = self.disconnect_all();
         let backend_clean = match self.gilrs.take() {

@@ -91,6 +91,8 @@ pub use windows::{
     taskbar_icon_is_visible, terminate_after_product_shutdown,
 };
 #[cfg(target_os = "linux")]
+mod gilrs_gamepad;
+#[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
 mod linux_input;
